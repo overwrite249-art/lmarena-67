@@ -16,6 +16,8 @@
 // @connect      lmarena.ai
 // @connect      us.i.posthog.com
 // @connect      us.posthog.com
+// @downloadURL  https://raw.githubusercontent.com/overwrite249-art/lmarena-67/main/loader.user.js
+// @updateURL    https://raw.githubusercontent.com/overwrite249-art/lmarena-67/main/loader.user.js
 // @noframes
 // ==/UserScript==
 
