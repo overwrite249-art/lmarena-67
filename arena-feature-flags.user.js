@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      5.1.1
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v5.1: Fixed GUI resilience, auto-detected flags always shown, MutationObserver re-injection.
+// @version      5.2.0
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v5.2: Multi-pattern model unlock, fetch/XHR model API patching, RSC diagnostics.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -124,11 +124,78 @@
         );
       }
 
-      // ── Patch userSelectable:false → true (unlock hidden models) ──
+      // ── Patch model visibility/selectable (unlock hidden models) ──
+      // Arena.ai keeps changing the property name. We patch ALL known patterns:
       if (_unlockModels) {
+        // Pattern 1: Original — "userSelectable":false (boolean)
         text = text.replace(
           /"userSelectable":false/g,
           '"userSelectable":true'
+        );
+        // Pattern 2: String variant — "userSelectable":"false"
+        text = text.replace(
+          /"userSelectable":"false"/g,
+          '"userSelectable":true'
+        );
+        // Pattern 3: Renamed — "isUserSelectable":false
+        text = text.replace(
+          /"isUserSelectable":false/g,
+          '"isUserSelectable":true'
+        );
+        // Pattern 4: Renamed string — "isUserSelectable":"false"
+        text = text.replace(
+          /"isUserSelectable":"false"/g,
+          '"isUserSelectable":true'
+        );
+        // Pattern 5: Shortened — "selectable":false
+        text = text.replace(
+          /"selectable":false/g,
+          '"selectable":true'
+        );
+        // Pattern 6: Shortened string — "selectable":"false"
+        text = text.replace(
+          /"selectable":"false"/g,
+          '"selectable":true'
+        );
+        // Pattern 7: "hidden":true → "hidden":false
+        text = text.replace(
+          /"hidden":true/g,
+          '"hidden":false'
+        );
+        // Pattern 8: "hidden":"true" → "hidden":false
+        text = text.replace(
+          /"hidden":"true"/g,
+          '"hidden":false'
+        );
+        // Pattern 9: "isVisible":false → "isVisible":true
+        text = text.replace(
+          /"isVisible":false/g,
+          '"isVisible":true'
+        );
+        // Pattern 10: "enabled":false (on model objects)
+        text = text.replace(
+          /"enabled":false/g,
+          '"enabled":true'
+        );
+        // Pattern 11: "isHidden":true → "isHidden":false
+        text = text.replace(
+          /"isHidden":true/g,
+          '"isHidden":false'
+        );
+        // Pattern 12: "isLocked":true → "isLocked":false
+        text = text.replace(
+          /"isLocked":true/g,
+          '"isLocked":false'
+        );
+        // Pattern 13: "locked":true → "locked":false
+        text = text.replace(
+          /"locked":true/g,
+          '"locked":false'
+        );
+        // Pattern 14: "locked":"true" → "locked":false
+        text = text.replace(
+          /"locked":"true"/g,
+          '"locked":false'
         );
       }
 
@@ -187,15 +254,46 @@
       }
 
       // ── Discover locked models from RSC payload ──
-      const lockedModelMatches = text.matchAll(/"publicName":"([^"]+)".*?"userSelectable":false/g);
-      for (const m of lockedModelMatches) {
-        const publicName = m[1];
-        if (!_discoveredLockedModels.find(x => x.publicName === publicName)) {
-          const displayNameMatch = text.match(new RegExp('"publicName":"' + publicName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '".*?"displayName":"([^"]*)"'));
-          _discoveredLockedModels.push({
-            publicName,
-            displayName: displayNameMatch ? displayNameMatch[1] : publicName
-          });
+      // Match multiple possible patterns for locked/hidden models
+      const modelLockPatterns = [
+        /"publicName":"([^"]+)"[^}]*?"userSelectable":false/g,
+        /"publicName":"([^"]+)"[^}]*?"userSelectable":"false"/g,
+        /"publicName":"([^"]+)"[^}]*?"isUserSelectable":false/g,
+        /"publicName":"([^"]+)"[^}]*?"selectable":false/g,
+        /"publicName":"([^"]+)"[^}]*?"hidden":true/g,
+        /"publicName":"([^"]+)"[^}]*?"isHidden":true/g,
+        /"publicName":"([^"]+)"[^}]*?"locked":true/g,
+        /"publicName":"([^"]+)"[^}]*?"isLocked":true/g,
+        // Also try matching with "name" instead of "publicName"
+        /"name":"([^"]+)"[^}]*?"userSelectable":false/g,
+        /"name":"([^"]+)"[^}]*?"selectable":false/g,
+      ];
+
+      for (const pattern of modelLockPatterns) {
+        const matches = text.matchAll(pattern);
+        for (const m of matches) {
+          const publicName = m[1];
+          if (!_discoveredLockedModels.find(x => x.publicName === publicName)) {
+            const nameEscaped = publicName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const displayNameMatch = text.match(new RegExp('"publicName":"' + nameEscaped + '"[^}]*?"displayName":"([^"]*)"'));
+            const displayNameMatch2 = text.match(new RegExp('"name":"' + nameEscaped + '"[^}]*?"displayName":"([^"]*)"'));
+            _discoveredLockedModels.push({
+              publicName,
+              displayName: (displayNameMatch || displayNameMatch2)?.[1] || publicName
+            });
+          }
+        }
+      }
+
+      // ── Diagnostic: Log model data chunks for debugging ──
+      // If we see model data but NO locked models, log a sample so we can
+      // figure out the new format. This only runs once per page load.
+      if (text.includes('publicName') && _discoveredLockedModels.length === 0 && !window.__afu_model_diag_logged) {
+        window.__afu_model_diag_logged = true;
+        const modelIdx = text.indexOf('publicName');
+        if (modelIdx !== -1) {
+          const sample = text.substring(Math.max(0, modelIdx - 50), Math.min(text.length, modelIdx + 500));
+          console.log('[Arena Flag Unlocker] Model data sample (no locked models found):', sample);
         }
       }
 
@@ -542,6 +640,36 @@
               });
             }
           }
+          // ── Also intercept model-list API responses ──
+          // Arena.ai may load models from API endpoints. Patch visibility there too.
+          if (_unlockModels && (url.includes('/models') || url.includes('/api/') || url.includes('/rpc'))) {
+            const clone = response.clone();
+            const text = await clone.text();
+            let patched = text;
+
+            // Patch all known visibility patterns in JSON responses
+            patched = patched.replace(/"userSelectable":false/g, '"userSelectable":true');
+            patched = patched.replace(/"userSelectable":"false"/g, '"userSelectable":true');
+            patched = patched.replace(/"isUserSelectable":false/g, '"isUserSelectable":true');
+            patched = patched.replace(/"isUserSelectable":"false"/g, '"isUserSelectable":true');
+            patched = patched.replace(/"selectable":false/g, '"selectable":true');
+            patched = patched.replace(/"selectable":"false"/g, '"selectable":true');
+            patched = patched.replace(/"hidden":true/g, '"hidden":false');
+            patched = patched.replace(/"hidden":"true"/g, '"hidden":false');
+            patched = patched.replace(/"isHidden":true/g, '"isHidden":false');
+            patched = patched.replace(/"locked":true/g, '"locked":false');
+            patched = patched.replace(/"locked":"true"/g, '"locked":false');
+            patched = patched.replace(/"isLocked":true/g, '"isLocked":false');
+
+            if (patched !== text) {
+              console.log('[Arena Flag Unlocker] Patched model visibility in fetch response:', url);
+              return new Response(patched, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+              });
+            }
+          }
         } catch (e) { /* not our endpoint */ }
         return response;
       });
@@ -557,6 +685,7 @@
 
     XMLHttpRequest.prototype.send = function (...args) {
       const url = this._afuUrl || '';
+      // Intercept PostHog/flag endpoints
       if (url.includes('/decide') || url.includes('/flags') || url.includes('/rpc/')) {
         this.addEventListener('readystatechange', function () {
           if (this.readyState === 4 && this.status === 200) {
@@ -568,6 +697,30 @@
                 }
                 Object.defineProperty(this, 'responseText', { writable: true, value: JSON.stringify(data) });
                 Object.defineProperty(this, 'response', { writable: true, value: JSON.stringify(data) });
+              }
+            } catch (e) { /* not JSON */ }
+          }
+        });
+      }
+      // Intercept model API endpoints for visibility patching
+      if (_unlockModels && (url.includes('/models') || url.includes('/api/') || url.includes('/rpc'))) {
+        this.addEventListener('readystatechange', function () {
+          if (this.readyState === 4 && this.status === 200) {
+            try {
+              let text = this.responseText;
+              let patched = text;
+              patched = patched.replace(/"userSelectable":false/g, '"userSelectable":true');
+              patched = patched.replace(/"userSelectable":"false"/g, '"userSelectable":true');
+              patched = patched.replace(/"isUserSelectable":false/g, '"isUserSelectable":true');
+              patched = patched.replace(/"selectable":false/g, '"selectable":true');
+              patched = patched.replace(/"hidden":true/g, '"hidden":false');
+              patched = patched.replace(/"isHidden":true/g, '"isHidden":false');
+              patched = patched.replace(/"locked":true/g, '"locked":false');
+              patched = patched.replace(/"isLocked":true/g, '"isLocked":false');
+              if (patched !== text) {
+                Object.defineProperty(this, 'responseText', { writable: true, value: patched });
+                Object.defineProperty(this, 'response', { writable: true, value: patched });
+                console.log('[Arena Flag Unlocker] Patched model visibility in XHR response:', url);
               }
             } catch (e) { /* not JSON */ }
           }
