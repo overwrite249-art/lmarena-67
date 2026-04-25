@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      5.0.0
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v5: Proxied PostHog, toolbar cookie sync, Zod-validated treatments, bootstrap override.
+// @version      5.1.0
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v5.1: Fixed GUI resilience, auto-detected flags always shown, MutationObserver re-injection.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -16,15 +16,12 @@
 // ==/UserScript==
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// v5.0 CHANGES (2025-04):
-//   - PostHog endpoint now proxied at /rpc (was us.i.posthog.com)
-//   - New ph-toolbar-overrides cookie sync (official PostHog override channel)
-//   - $override_feature_flags in localStorage (PostHog toolbar mechanism)
-//   - PostHog bootstrap.featureFlags override at init time
-//   - Updated Zod-validated treatment values for all string flags
-//   - New flags: fast-mode, use-text-v6, use-video-v6, use-search-v6, file-upload
-//   - 532 models (28 hidden) with new modalities: chat, webdev, image, video, search
-//   - RSC interception still works (no anti-tamper or integrity checks)
+// v5.1 CHANGES (2025-04):
+//   - FIXED: GUI now survives React re-renders / client-side navigation
+//   - MutationObserver re-injects gear + panel if removed from DOM
+//   - CSS uses !important to prevent site from hiding elements
+//   - Auto-detected flags section ALWAYS shown at bottom (even if empty)
+//   - Unknown flags without proper names displayed at bottom of panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
 (function () {
@@ -668,157 +665,203 @@
   }
 
   // ─── GUI ──────────────────────────────────────────────────────────────────
-  function createGUI(overrides) {
-    if (document.getElementById('afu-gear')) return;
+  // v5.1: GUI is now resilient to React re-renders and client-side navigation.
+  // - MutationObserver re-injects if elements are removed
+  // - CSS uses !important to prevent site overrides
+  // - Auto-detected flags ALWAYS shown at bottom
 
-    const style = document.createElement('style');
-    style.textContent = `
-      #afu-gear {
-        position: fixed; bottom: 20px; right: 20px;
-        width: 44px; height: 44px; border-radius: 50%;
-        background: #1a1a2e; border: 2px solid #4a4a6a;
-        color: #e0e0ff; font-size: 22px;
-        display: flex; align-items: center; justify-content: center;
-        cursor: pointer; z-index: 2147483647;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-        user-select: none;
-      }
-      #afu-gear:hover {
-        background: #2a2a4e; border-color: #7a7aaa;
-        transform: rotate(45deg) scale(1.1);
-      }
-      #afu-panel {
-        position: fixed; bottom: 74px; right: 20px;
-        width: 460px; max-height: 85vh;
-        background: #0d0d1a; border: 1px solid #2a2a4a;
-        border-radius: 12px; z-index: 2147483646;
-        overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        display: none; flex-direction: column;
-      }
-      #afu-panel.open { display: flex; }
-      .afu-header {
-        padding: 14px 18px;
-        background: linear-gradient(135deg, #1a1a3e, #0d0d2a);
-        border-bottom: 1px solid #2a2a4a;
-        display: flex; align-items: center; justify-content: space-between;
-        cursor: move;
-      }
-      .afu-header h3 { margin: 0; color: #c0c0ff; font-size: 15px; font-weight: 600; }
-      .afu-version { color: #4a4a6a; font-size: 9px; margin-left: 8px; font-weight: 400; }
-      .afu-header-btns { display: flex; gap: 8px; }
-      .afu-header-btns button {
-        background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
-        color: #aaaacc; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-        font-size: 11px; transition: all 0.2s;
-      }
-      .afu-header-btns button:hover { background: rgba(255,255,255,0.15); color: #fff; }
-      .afu-body { overflow-y: auto; flex: 1; padding: 8px 0; }
-      .afu-body::-webkit-scrollbar { width: 6px; }
-      .afu-body::-webkit-scrollbar-track { background: transparent; }
-      .afu-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
-      .afu-section { padding: 6px 14px; }
-      .afu-section-title {
-        color: #6a6a9a; font-size: 10px; text-transform: uppercase;
-        letter-spacing: 1.2px; margin: 10px 0 6px; font-weight: 600;
-      }
-      .afu-flag-row {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 7px 14px; transition: background 0.15s; border-radius: 6px; margin: 0 4px;
-      }
-      .afu-flag-row:hover { background: rgba(255,255,255,0.04); }
-      .afu-flag-info { flex: 1; min-width: 0; margin-right: 12px; }
-      .afu-flag-label {
-        color: #d0d0ee; font-size: 13px; font-weight: 500;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .afu-flag-desc {
-        color: #6a6a8a; font-size: 11px; margin-top: 2px;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .afu-flag-key {
-        color: #4a4a6a; font-size: 9px;
-        font-family: 'SF Mono', 'Fira Code', monospace; margin-top: 1px;
-      }
-      .afu-flag-value {
-        color: #3a8a3a; font-size: 9px;
-        font-family: 'SF Mono', 'Fira Code', monospace; margin-top: 1px;
-      }
-      .afu-toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
-      .afu-toggle input { opacity: 0; width: 0; height: 0; }
-      .afu-toggle-slider {
-        position: absolute; cursor: pointer;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: #2a2a3a; border-radius: 11px;
-        transition: 0.3s; border: 1px solid #3a3a5a;
-      }
-      .afu-toggle-slider:before {
-        position: absolute; content: "";
-        height: 16px; width: 16px; left: 2px; bottom: 2px;
-        background: #666; border-radius: 50%; transition: 0.3s;
-      }
-      .afu-toggle input:checked + .afu-toggle-slider {
-        background: #2d5a1e; border-color: #4a8a2a;
-      }
-      .afu-toggle input:checked + .afu-toggle-slider:before {
-        transform: translateX(18px); background: #6aff3a;
-        box-shadow: 0 0 8px rgba(106,255,58,0.4);
-      }
-      .afu-rec-badge {
-        background: #ff4444; color: white; font-size: 8px;
-        padding: 1px 5px; border-radius: 4px; font-weight: 700;
-        margin-left: 6px; text-transform: uppercase; letter-spacing: 0.5px;
-      }
-      .afu-new-badge {
-        background: #ffaa00; color: #000; font-size: 8px;
-        padding: 1px 5px; border-radius: 4px; font-weight: 700;
-        margin-left: 6px; text-transform: uppercase; letter-spacing: 0.5px;
-      }
-      .afu-models-row {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 10px 14px; background: rgba(106,58,170,0.12);
-        border: 1px solid rgba(106,58,170,0.25); border-radius: 8px; margin: 4px 10px;
-      }
-      .afu-models-info { flex: 1; margin-right: 12px; }
-      .afu-models-label {
-        color: #d0b0ff; font-size: 14px; font-weight: 600;
-      }
-      .afu-models-count {
-        color: #8a6aaa; font-size: 11px; margin-top: 3px;
-      }
-      .afu-models-list {
-        padding: 6px 14px 10px; max-height: 180px; overflow-y: auto;
-        background: rgba(0,0,0,0.2); margin: 4px 10px; border-radius: 6px;
-      }
-      .afu-models-list::-webkit-scrollbar { width: 4px; }
-      .afu-models-list::-webkit-scrollbar-thumb { background: #3a3a5a; border-radius: 2px; }
-      .afu-model-item {
-        color: #9a9acc; font-size: 11px; padding: 3px 0;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        border-bottom: 1px solid rgba(255,255,255,0.03);
-      }
-      .afu-model-item:last-child { border-bottom: none; }
-      .afu-footer {
-        padding: 10px 14px; border-top: 1px solid #2a2a4a; text-align: center;
-      }
-      .afu-footer button {
-        background: linear-gradient(135deg, #4a1a8a, #2a0a5a);
-        color: #d0b0ff; border: 1px solid #6a3aaa;
-        padding: 8px 24px; border-radius: 8px; cursor: pointer;
-        font-size: 13px; font-weight: 600; transition: all 0.2s;
-      }
-      .afu-footer button:hover {
-        background: linear-gradient(135deg, #6a2aaa, #4a1a8a);
-        box-shadow: 0 0 12px rgba(106,58,170,0.4);
-      }
-      .afu-status-bar {
-        padding: 6px 14px; border-top: 1px solid #1a1a2a;
-        background: rgba(0,0,0,0.3); font-size: 10px; color: #4a4a6a;
-        display: flex; justify-content: space-between;
-      }
-    `;
-    document.head.appendChild(style);
+  let _guiInstances = 0;
+  let _panelWasOpen = false;
+  let _mutationObserver = null;
+
+  function createGUI(overrides) {
+    // Remove any existing instances first (clean slate)
+    const existingGear = document.getElementById('afu-gear');
+    const existingPanel = document.getElementById('afu-panel');
+    if (existingGear) existingGear.remove();
+    if (existingPanel) existingPanel.remove();
+
+    _guiInstances++;
+
+    // ── Inject styles with !important ──
+    const styleId = 'afu-styles';
+    let style = document.getElementById(styleId);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        #afu-gear {
+          position: fixed !important; bottom: 20px !important; right: 20px !important;
+          width: 44px !important; height: 44px !important; border-radius: 50% !important;
+          background: #1a1a2e !important; border: 2px solid #4a4a6a !important;
+          color: #e0e0ff !important; font-size: 22px !important;
+          display: flex !important; align-items: center !important; justify-content: center !important;
+          cursor: pointer !important; z-index: 2147483647 !important;
+          transition: all 0.3s ease !important;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+          user-select: none !important;
+          pointer-events: auto !important;
+          opacity: 1 !important;
+          visibility: visible !important;
+        }
+        #afu-gear:hover {
+          background: #2a2a4e !important; border-color: #7a7aaa !important;
+          transform: rotate(45deg) scale(1.1) !important;
+        }
+        #afu-panel {
+          position: fixed !important; bottom: 74px !important; right: 20px !important;
+          width: 460px !important; max-height: 85vh !important;
+          background: #0d0d1a !important; border: 1px solid #2a2a4a !important;
+          border-radius: 12px !important; z-index: 2147483646 !important;
+          overflow: hidden !important; box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+          display: none !important; flex-direction: column !important;
+          pointer-events: auto !important;
+          opacity: 1 !important;
+          visibility: visible !important;
+        }
+        #afu-panel.open { display: flex !important; }
+        .afu-header {
+          padding: 14px 18px !important;
+          background: linear-gradient(135deg, #1a1a3e, #0d0d2a) !important;
+          border-bottom: 1px solid #2a2a4a !important;
+          display: flex !important; align-items: center !important; justify-content: space-between !important;
+          cursor: move !important;
+        }
+        .afu-header h3 { margin: 0 !important; color: #c0c0ff !important; font-size: 15px !important; font-weight: 600 !important; }
+        .afu-version { color: #4a4a6a !important; font-size: 9px !important; margin-left: 8px !important; font-weight: 400 !important; }
+        .afu-header-btns { display: flex !important; gap: 8px !important; }
+        .afu-header-btns button {
+          background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.12) !important;
+          color: #aaaacc !important; padding: 4px 10px !important; border-radius: 6px !important; cursor: pointer !important;
+          font-size: 11px !important; transition: all 0.2s !important;
+        }
+        .afu-header-btns button:hover { background: rgba(255,255,255,0.15) !important; color: #fff !important; }
+        .afu-body { overflow-y: auto !important; flex: 1 !important; padding: 8px 0 !important; }
+        .afu-body::-webkit-scrollbar { width: 6px !important; }
+        .afu-body::-webkit-scrollbar-track { background: transparent !important; }
+        .afu-body::-webkit-scrollbar-thumb { background: #2a2a4a !important; border-radius: 3px !important; }
+        .afu-section { padding: 6px 14px !important; }
+        .afu-section-title {
+          color: #6a6a9a !important; font-size: 10px !important; text-transform: uppercase !important;
+          letter-spacing: 1.2px !important; margin: 10px 0 6px !important; font-weight: 600 !important;
+        }
+        .afu-flag-row {
+          display: flex !important; align-items: center !important; justify-content: space-between !important;
+          padding: 7px 14px !important; transition: background 0.15s !important; border-radius: 6px !important; margin: 0 4px !important;
+        }
+        .afu-flag-row:hover { background: rgba(255,255,255,0.04) !important; }
+        .afu-flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
+        .afu-flag-label {
+          color: #d0d0ee !important; font-size: 13px !important; font-weight: 500 !important;
+          white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
+        }
+        .afu-flag-desc {
+          color: #6a6a8a !important; font-size: 11px !important; margin-top: 2px !important;
+          white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
+        }
+        .afu-flag-key {
+          color: #4a4a6a !important; font-size: 9px !important;
+          font-family: 'SF Mono', 'Fira Code', monospace !important; margin-top: 1px !important;
+        }
+        .afu-flag-value {
+          color: #3a8a3a !important; font-size: 9px !important;
+          font-family: 'SF Mono', 'Fira Code', monospace !important; margin-top: 1px !important;
+        }
+        .afu-toggle { position: relative !important; width: 40px !important; height: 22px !important; flex-shrink: 0 !important; }
+        .afu-toggle input { opacity: 0 !important; width: 0 !important; height: 0 !important; }
+        .afu-toggle-slider {
+          position: absolute !important; cursor: pointer !important;
+          top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+          background: #2a2a3a !important; border-radius: 11px !important;
+          transition: 0.3s !important; border: 1px solid #3a3a5a !important;
+        }
+        .afu-toggle-slider:before {
+          position: absolute !important; content: "" !important;
+          height: 16px !important; width: 16px !important; left: 2px !important; bottom: 2px !important;
+          background: #666 !important; border-radius: 50% !important; transition: 0.3s !important;
+        }
+        .afu-toggle input:checked + .afu-toggle-slider {
+          background: #2d5a1e !important; border-color: #4a8a2a !important;
+        }
+        .afu-toggle input:checked + .afu-toggle-slider:before {
+          transform: translateX(18px) !important; background: #6aff3a !important;
+          box-shadow: 0 0 8px rgba(106,255,58,0.4) !important;
+        }
+        .afu-rec-badge {
+          background: #ff4444 !important; color: white !important; font-size: 8px !important;
+          padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important;
+          margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important;
+        }
+        .afu-new-badge {
+          background: #ffaa00 !important; color: #000 !important; font-size: 8px !important;
+          padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important;
+          margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important;
+        }
+        .afu-models-row {
+          display: flex !important; align-items: center !important; justify-content: space-between !important;
+          padding: 10px 14px !important; background: rgba(106,58,170,0.12) !important;
+          border: 1px solid rgba(106,58,170,0.25) !important; border-radius: 8px !important; margin: 4px 10px !important;
+        }
+        .afu-models-info { flex: 1 !important; margin-right: 12px !important; }
+        .afu-models-label {
+          color: #d0b0ff !important; font-size: 14px !important; font-weight: 600 !important;
+        }
+        .afu-models-count {
+          color: #8a6aaa !important; font-size: 11px !important; margin-top: 3px !important;
+        }
+        .afu-models-list {
+          padding: 6px 14px 10px !important; max-height: 180px !important; overflow-y: auto !important;
+          background: rgba(0,0,0,0.2) !important; margin: 4px 10px !important; border-radius: 6px !important;
+        }
+        .afu-models-list::-webkit-scrollbar { width: 4px !important; }
+        .afu-models-list::-webkit-scrollbar-thumb { background: #3a3a5a !important; border-radius: 2px !important; }
+        .afu-model-item {
+          color: #9a9acc !important; font-size: 11px !important; padding: 3px 0 !important;
+          font-family: 'SF Mono', 'Fira Code', monospace !important;
+          border-bottom: 1px solid rgba(255,255,255,0.03) !important;
+        }
+        .afu-model-item:last-child { border-bottom: none !important; }
+        .afu-footer {
+          padding: 10px 14px !important; border-top: 1px solid #2a2a4a !important; text-align: center !important;
+        }
+        .afu-footer button {
+          background: linear-gradient(135deg, #4a1a8a, #2a0a5a) !important;
+          color: #d0b0ff !important; border: 1px solid #6a3aaa !important;
+          padding: 8px 24px !important; border-radius: 8px !important; cursor: pointer !important;
+          font-size: 13px !important; font-weight: 600 !important; transition: all 0.2s !important;
+        }
+        .afu-footer button:hover {
+          background: linear-gradient(135deg, #6a2aaa, #4a1a8a) !important;
+          box-shadow: 0 0 12px rgba(106,58,170,0.4) !important;
+        }
+        .afu-status-bar {
+          padding: 6px 14px !important; border-top: 1px solid #1a1a2a !important;
+          background: rgba(0,0,0,0.3) !important; font-size: 10px !important; color: #4a4a6a !important;
+          display: flex !important; justify-content: space-between !important;
+        }
+        .afu-unknown-flag-row {
+          display: flex !important; align-items: center !important; justify-content: space-between !important;
+          padding: 6px 14px !important; border-radius: 6px !important; margin: 0 4px !important;
+          background: rgba(255,170,0,0.05) !important; border: 1px solid rgba(255,170,0,0.1) !important;
+        }
+        .afu-unknown-flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
+        .afu-unknown-flag-key {
+          color: #ffaa44 !important; font-size: 12px !important; font-weight: 600 !important;
+          font-family: 'SF Mono', 'Fira Code', monospace !important;
+          word-break: break-all !important;
+        }
+        .afu-unknown-flag-val {
+          color: #6a6a8a !important; font-size: 10px !important; margin-top: 2px !important;
+          font-family: 'SF Mono', 'Fira Code', monospace !important;
+        }
+        .afu-empty-hint {
+          color: #4a4a6a !important; font-size: 11px !important; padding: 8px 14px !important;
+          font-style: italic !important;
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
 
     const gear = document.createElement('div');
     gear.id = 'afu-gear';
@@ -828,12 +871,13 @@
 
     const panel = document.createElement('div');
     panel.id = 'afu-panel';
+    if (_panelWasOpen) panel.classList.add('open');
     document.body.appendChild(panel);
 
     const header = document.createElement('div');
     header.className = 'afu-header';
     header.innerHTML = `
-      <h3>\uD83D\uDE80 Arena Flag Unlocker<span class="afu-version">v5.0</span></h3>
+      <h3>\uD83D\uDE80 Arena Flag Unlocker<span class="afu-version">v5.1</span></h3>
       <div class="afu-header-btns">
         <button id="afu-enable-all" title="Enable all recommended flags">Enable All \u2605</button>
         <button id="afu-disable-all" title="Reset all flags to defaults">Reset All</button>
@@ -944,22 +988,77 @@
     }
     bodyEl.appendChild(vfSection);
 
-    // ── Auto-Discovered Flags Section ──
+    // ── Auto-Discovered / Unknown Flags Section (ALWAYS shown) ──
     const newFlags = [..._discoveredFlags].filter(k => !KNOWN_FLAG_KEYS.has(k));
-    if (newFlags.length > 0) {
-      const newSection = document.createElement('div');
-      newSection.className = 'afu-section';
-      const newTitle = document.createElement('div');
-      newTitle.className = 'afu-section-title';
-      newTitle.textContent = 'AUTO-DETECTED FLAGS';
-      newSection.appendChild(newTitle);
+    const newSection = document.createElement('div');
+    newSection.className = 'afu-section';
+    const newTitle = document.createElement('div');
+    newTitle.className = 'afu-section-title';
+    newTitle.textContent = 'NEW / UNKNOWN FLAGS';
+    newSection.appendChild(newTitle);
 
+    if (newFlags.length > 0) {
       for (const flagKey of newFlags.sort()) {
-        const flagDef = { key: flagKey, label: flagKey, desc: 'Auto-detected from RSC payload', type: 'string' };
-        newSection.appendChild(createFlagRow(flagDef, overrides));
+        // Show each unknown flag with its key name and current value
+        const row = document.createElement('div');
+        row.className = 'afu-unknown-flag-row';
+
+        const info = document.createElement('div');
+        info.className = 'afu-unknown-flag-info';
+
+        const keyLine = document.createElement('div');
+        keyLine.className = 'afu-unknown-flag-key';
+        keyLine.textContent = flagKey;
+
+        const valLine = document.createElement('div');
+        valLine.className = 'afu-unknown-flag-val';
+        const discoveredVal = _discoveredFlagValues[flagKey];
+        if (discoveredVal !== undefined) {
+          valLine.textContent = 'current: ' + JSON.stringify(discoveredVal);
+        } else {
+          valLine.textContent = 'value unknown';
+        }
+
+        info.appendChild(keyLine);
+        info.appendChild(valLine);
+
+        // Add toggle for unknown flags too
+        const toggle = document.createElement('label');
+        toggle.className = 'afu-toggle';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = overrides[flagKey] !== undefined;
+        const slider = document.createElement('span');
+        slider.className = 'afu-toggle-slider';
+        toggle.appendChild(input);
+        toggle.appendChild(slider);
+
+        input.addEventListener('change', () => {
+          const current = loadOverrides();
+          if (input.checked) {
+            // For unknown flags, use 'treatment' as default enable value
+            current[flagKey] = TREATMENT_MAP[flagKey] || 'treatment';
+          } else {
+            delete current[flagKey];
+          }
+          saveOverrides(current);
+          syncToolbarOverridesCookie(current);
+          setPosthogToolbarOverrides(current);
+          patchPosthogLocalStorage(current);
+          applyPosthogOverrides(current);
+        });
+
+        row.appendChild(info);
+        row.appendChild(toggle);
+        newSection.appendChild(row);
       }
-      bodyEl.appendChild(newSection);
+    } else {
+      const hint = document.createElement('div');
+      hint.className = 'afu-empty-hint';
+      hint.textContent = 'No unknown flags detected yet — they appear here when new flags are found in RSC data.';
+      newSection.appendChild(hint);
     }
+    bodyEl.appendChild(newSection);
 
     // ── Admin Dashboard Access Section ──
     const adminSection = document.createElement('div');
@@ -1058,7 +1157,7 @@
     statusBar.className = 'afu-status-bar';
     const activeCount = Object.keys(overrides).length;
     const modelCount = _discoveredLockedModels.length;
-    statusBar.innerHTML = `<span>Active: ${activeCount} flags | ${modelCount} hidden models</span><span>v5.0 | PostHog proxied</span>`;
+    statusBar.innerHTML = `<span>Active: ${activeCount} flags | ${modelCount} hidden models</span><span>v5.1 | PostHog proxied</span>`;
     panel.appendChild(statusBar);
 
     // ── Toggle panel ──
@@ -1204,28 +1303,117 @@
   // 2. Intercept PostHog bootstrap at init time
   interceptPosthogBootstrap(overrides);
 
-  // 3. After DOM loads: patch localStorage, apply SDK overrides, create GUI
-  if (Object.keys(overrides).length > 0 || _unlockModels) {
-    // Patch localStorage early
-    if (Object.keys(overrides).length > 0) {
-      patchPosthogLocalStorage(overrides);
-      setPosthogToolbarOverrides(overrides);
-      syncToolbarOverridesCookie(overrides);
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-      createGUI(overrides);
-      applyPosthogOverrides(overrides);
-      hookVercelFlagContext();
-    });
-  } else {
-    // No overrides yet — just create GUI
-    document.addEventListener('DOMContentLoaded', () => {
-      createGUI(overrides);
-      hookVercelFlagContext();
-    });
+  // 3. Patch localStorage early if we have overrides
+  if (Object.keys(overrides).length > 0) {
+    patchPosthogLocalStorage(overrides);
+    setPosthogToolbarOverrides(overrides);
+    syncToolbarOverridesCookie(overrides);
   }
 
-  console.log('[Arena Flag Unlocker] v5.0 initialized. RSC interceptor active, PostHog proxied at /rpc, toolbar cookie sync enabled.');
+  // ─── GUI PERSISTENCE: MutationObserver + Navigation Re-injection ──────────
+  // The gear icon and panel get destroyed by React re-renders and Next.js
+  // client-side navigation. We watch for removal and re-inject.
+
+  function initGUI() {
+    createGUI(overrides);
+    applyPosthogOverrides(overrides);
+    hookVercelFlagContext();
+  }
+
+  // Watch for the gear being removed from DOM (React re-render)
+  function startGUIWatcher() {
+    if (_mutationObserver) {
+      try { _mutationObserver.disconnect(); } catch (e) { /* ignore */ }
+    }
+
+    _mutationObserver = new MutationObserver((mutations) => {
+      // Check if our gear was removed
+      const gear = document.getElementById('afu-gear');
+      if (!gear && document.body && document.readyState !== 'loading') {
+        // Gear was removed — re-inject after a small delay to avoid
+        // fighting with React during active re-renders
+        setTimeout(() => {
+          if (!document.getElementById('afu-gear')) {
+            initGUI();
+            startGUIWatcher(); // re-attach observer to new elements
+          }
+        }, 250);
+      }
+    });
+
+    // Observe the body for child removals
+    if (document.body) {
+      _mutationObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  // ── Next.js client-side navigation re-injection ──
+  // When Next.js does client-side navigation (pushState/replaceState),
+  // React re-renders the page content which can remove our GUI elements.
+  const _origPushState = history.pushState;
+  const _origReplaceState = history.replaceState;
+
+  history.pushState = function (...args) {
+    _origPushState.apply(this, args);
+    setTimeout(() => {
+      if (!document.getElementById('afu-gear')) initGUI();
+      startGUIWatcher();
+    }, 300);
+  };
+
+  history.replaceState = function (...args) {
+    _origReplaceState.apply(this, args);
+    setTimeout(() => {
+      if (!document.getElementById('afu-gear')) initGUI();
+      startGUIWatcher();
+    }, 300);
+  };
+
+  window.addEventListener('popstate', () => {
+    setTimeout(() => {
+      if (!document.getElementById('afu-gear')) initGUI();
+      startGUIWatcher();
+    }, 300);
+  });
+
+  // Track panel open state so we can restore it after re-injection
+  document.addEventListener('click', (e) => {
+    const gear = document.getElementById('afu-gear');
+    if (gear && (e.target === gear || gear.contains(e.target))) {
+      _panelWasOpen = !_panelWasOpen;
+    }
+  });
+
+  // ── Initial GUI creation ──
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      initGUI();
+      startGUIWatcher();
+    });
+  } else {
+    // DOM already loaded (can happen with Tampermonkey injection timing)
+    initGUI();
+    startGUIWatcher();
+  }
+
+  // ── Also try a delayed injection in case DOMContentLoaded fired too early ──
+  setTimeout(() => {
+    if (!document.getElementById('afu-gear')) {
+      initGUI();
+      startGUIWatcher();
+    }
+  }, 1500);
+
+  // ── And another attempt after full page load ──
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      if (!document.getElementById('afu-gear')) {
+        initGUI();
+        startGUIWatcher();
+      }
+    }, 500);
+  });
+
+  console.log('[Arena Flag Unlocker] v5.1 initialized. RSC interceptor active, PostHog proxied at /rpc, GUI with MutationObserver re-injection.');
 
 })();
