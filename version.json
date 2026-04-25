@@ -1,5 +1,5 @@
 {
-  "version": "5.1.0",
-  "changelog": "v5.1: Fixed GUI not showing (MutationObserver re-injection, !important CSS), auto-detected unknown flags always shown at bottom",
+  "version": "5.1.1",
+  "changelog": "v5.1.1: Fix GM_registerMenuCommand/GM_xmlhttpRequest crash when injected via eval (loader), added GM API shims",
   "updated": "2025-04-25"
 }

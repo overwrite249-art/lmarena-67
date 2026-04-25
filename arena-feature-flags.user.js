@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      5.1.0
+// @version      5.1.1
 // @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v5.1: Fixed GUI resilience, auto-detected flags always shown, MutationObserver re-injection.
 // @author       Super Z
 // @match        https://arena.ai/*
@@ -26,6 +26,44 @@
 
 (function () {
   'use strict';
+
+  // ─── GM API SHIMS (for eval injection via loader) ──────────────────────
+  // When the loader injects this script via (0, eval)(cachedScript),
+  // Tampermonkey's GM_* APIs are not available in the eval scope.
+  // We provide safe fallbacks so the script doesn't crash.
+  if (typeof GM_registerMenuCommand === 'undefined') {
+    window.GM_registerMenuCommand = function () { /* no-op: menu commands unavailable in eval context */ };
+  }
+  if (typeof GM_xmlhttpRequest === 'undefined') {
+    window.GM_xmlhttpRequest = function (opts) {
+      // Fallback: use regular fetch for same-origin requests
+      const url = opts.url || '';
+      if (url.startsWith('/')) {
+        fetch(url, {
+          method: opts.method || 'GET',
+          headers: opts.headers || {},
+          redirect: opts.redirect || 'follow',
+        })
+        .then(r => {
+          if (opts.onload) {
+            r.text().then(text => opts.onload({
+              status: r.status,
+              responseText: text,
+              statusText: r.statusText,
+              finalUrl: r.url,
+            }));
+          }
+        })
+        .catch(err => {
+          if (opts.onerror) opts.onerror(err);
+        });
+      } else {
+        // Cross-origin: can't do it without GM_xmlhttpRequest
+        console.warn('[Arena Flag Unlocker] GM_xmlhttpRequest unavailable for cross-origin:', url);
+        if (opts.onerror) opts.onerror(new Error('GM_xmlhttpRequest not available'));
+      }
+    };
+  }
 
   const STORAGE_KEY = 'arena_flag_overrides';
   const MODELS_KEY = 'arena_models_unlocked';
