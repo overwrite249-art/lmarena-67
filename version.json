@@ -1,0 +1,5 @@
+{
+  "version": "5.0.0",
+  "changelog": "v5: PostHog proxy support, toolbar cookie sync, Zod-validated treatments, new flags (fast-mode, text-v6, video-v6, search-v6, file-upload)",
+  "updated": "2025-04-25"
+}

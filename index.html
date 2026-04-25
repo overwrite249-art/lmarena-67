@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arena Flag Unlocker — Install</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a14;
+      color: #c0c0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .bg-glow {
+      position: fixed;
+      top: -200px; left: 50%;
+      transform: translateX(-50%);
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(100,60,200,0.15) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 60px 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .logo {
+      font-size: 48px;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-size: 32px;
+      text-align: center;
+      background: linear-gradient(135deg, #a080ff, #6040c0);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #6a6a9a;
+      font-size: 14px;
+      margin-bottom: 40px;
+    }
+
+    .version-badge {
+      display: inline-block;
+      background: rgba(100,60,200,0.2);
+      border: 1px solid rgba(100,60,200,0.3);
+      color: #a080ff;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .install-card {
+      background: linear-gradient(135deg, #12122a, #0d0d1a);
+      border: 1px solid #2a2a4a;
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+
+    .install-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, #6a2aaa, #4a1a8a);
+      color: #e0d0ff;
+      border: 1px solid #8a4acc;
+      padding: 16px 40px;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      box-shadow: 0 4px 20px rgba(106,42,170,0.3);
+    }
+
+    .install-btn:hover {
+      background: linear-gradient(135deg, #8a3acc, #6a2aaa);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 28px rgba(106,42,170,0.5);
+    }
+
+    .install-btn svg {
+      width: 24px; height: 24px;
+    }
+
+    .install-note {
+      color: #6a6a9a;
+      font-size: 12px;
+      margin-top: 16px;
+      line-height: 1.6;
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 600px) {
+      .features { grid-template-columns: 1fr; }
+    }
+
+    .feature-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .feature-card .icon {
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+
+    .feature-card h3 {
+      color: #c0c0ff;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .feature-card p {
+      color: #6a6a8a;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .how-it-works {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .how-it-works h2 {
+      color: #a080ff;
+      font-size: 16px;
+      margin-bottom: 16px;
+    }
+
+    .step {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+      align-items: flex-start;
+    }
+
+    .step-num {
+      background: rgba(100,60,200,0.2);
+      border: 1px solid rgba(100,60,200,0.3);
+      color: #a080ff;
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .step-text {
+      color: #9a9acc;
+      font-size: 13px;
+      line-height: 1.6;
+      padding-top: 4px;
+    }
+
+    .step-text strong { color: #d0d0ff; }
+
+    .update-box {
+      background: rgba(40,80,40,0.1);
+      border: 1px solid rgba(60,120,60,0.2);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+
+    .update-box h3 {
+      color: #6aaa6a;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .update-box p {
+      color: #7a9a7a;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .changelog {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .changelog h2 {
+      color: #a080ff;
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+
+    .changelog ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .changelog li {
+      color: #8a8aaa;
+      font-size: 12px;
+      padding: 4px 0;
+      line-height: 1.5;
+    }
+
+    .changelog li::before {
+      content: '→';
+      color: #6a4aaa;
+      margin-right: 8px;
+    }
+
+    .footer {
+      text-align: center;
+      color: #3a3a5a;
+      font-size: 11px;
+      padding: 20px 0;
+      border-top: 1px solid #1a1a2a;
+      margin-top: 20px;
+    }
+
+    .file-link {
+      color: #6a4aaa;
+      text-decoration: none;
+    }
+
+    .file-link:hover {
+      color: #a080ff;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <div class="container">
+    <div class="logo">⚡</div>
+    <h1>Arena Flag Unlocker</h1>
+    <p class="subtitle">
+      Unlock hidden features, models, and developer flags on arena.ai
+      <br><span class="version-badge">v5.0.0</span>
+    </p>
+
+    <div class="install-card">
+      <a class="install-btn" href="loader.user.js">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+        </svg>
+        Install with Tampermonkey
+      </a>
+      <p class="install-note">
+        Click the button above — Tampermonkey will open and ask to confirm installation.<br>
+        You only install the <strong>loader</strong> — it auto-downloads and updates the main script from GitHub.
+      </p>
+    </div>
+
+    <div class="features">
+      <div class="feature-card">
+        <div class="icon">🤖</div>
+        <h3>Agent Mode</h3>
+        <p>Enable agentic AI with autonomous tool use and function calling</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🔓</div>
+        <h3>28 Hidden Models</h3>
+        <p>Unlock Claude Opus 4-7, GPT-5.5, Gemini 3.1 Pro, and more</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🚀</div>
+        <h3>90+ Feature Flags</h3>
+        <p>Fullstack Code Arena, Video Workflow, File Upload, Fast Mode, and more</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🔄</div>
+        <h3>Auto-Update</h3>
+        <p>Loader checks GitHub for updates and auto-installs new versions</p>
+      </div>
+    </div>
+
+    <div class="how-it-works">
+      <h2>How It Works</h2>
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">Install the <strong>loader script</strong> (tiny — 4KB). It's the only thing you install in Tampermonkey.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">Visit <strong>arena.ai</strong> — the loader downloads the main script from GitHub, caches it, and reloads once.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">From now on, the main script loads <strong>instantly</strong> from cache — no delay, no refresh. Catches RSC data before React.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">When a new version is pushed to GitHub, the loader auto-downloads it and reloads <strong>once</strong>. Then back to instant loads.</div>
+      </div>
+    </div>
+
+    <div class="update-box">
+      <h3>🔄 Auto-Update System</h3>
+      <p>
+        The loader checks <code>version.json</code> on every page load. If the version on GitHub is newer, it downloads the updated script, caches it, and reloads the page once. Normal page loads use the cached version for <strong>zero-delay injection</strong>. No manual updates needed.
+      </p>
+    </div>
+
+    <div class="changelog">
+      <h2>v5.0.0 Changelog</h2>
+      <ul>
+        <li>PostHog endpoint now proxied at /rpc (was us.i.posthog.com)</li>
+        <li>New <code>ph-toolbar-overrides</code> cookie sync — official override channel</li>
+        <li><code>$override_feature_flags</code> in PostHog localStorage (toolbar mechanism)</li>
+        <li>PostHog bootstrap.featureFlags override at init time</li>
+        <li>Updated Zod-validated treatment values for all string flags</li>
+        <li>New flags: fast-mode, use-text-v6, use-video-v6, use-search-v6, file-upload</li>
+        <li>532 models (28 hidden) with modalities: chat, webdev, image, video, search</li>
+        <li>React fiber tree walking for Vercel flags context override</li>
+        <li>Loader auto-update system — install once, updates automatically</li>
+      </ul>
+    </div>
+
+    <div class="footer">
+      <p>
+        <a class="file-link" href="loader.user.js">loader.user.js</a> ·
+        <a class="file-link" href="arena-feature-flags.user.js">arena-feature-flags.user.js</a> ·
+        <a class="file-link" href="version.json">version.json</a>
+      </p>
+      <p style="margin-top:8px;">Arena Flag Unlocker is for educational purposes only.</p>
+    </div>
+  </div>
+</body>
+</html>
