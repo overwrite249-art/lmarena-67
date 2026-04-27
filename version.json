@@ -1,5 +1,5 @@
 {
-  "version": "5.2.0",
-  "changelog": "v5.2: Multi-pattern model unlock (userSelectable/selectable/hidden/locked/isHidden/isLocked), fetch+XHR model API patching, RSC diagnostic logging for new formats",
-  "updated": "2025-04-25"
+  "version": "6.5",
+  "changelog": "v6.5: 13 new flags from PostHog (disable-turnstile-voting, prompt-minhash-tracking, billing topups, etc.). Stealth mode, auto-enable, capture suppression, collapsible auto-discovered section at bottom.",
+  "updated": "2025-04-28"
 }
