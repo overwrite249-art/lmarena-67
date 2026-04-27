@@ -1,5 +1,5 @@
 {
-  "version": "7.1",
-  "changelog": "v7.1: Always undetectable by design (no stealth toggle). All monkey-patches spoof native toString(), opaque localStorage keys, random DOM/CSS IDs per session. Persistent flags across updates. Removed stealth button — undetectability is always on.",
+  "version": "7.2",
+  "changelog": "v7.2: 66 new flags discovered from PostHog /decide endpoint — use-image-v6, use-webdev-v6 (new recommended), plus 63 survey-targeting-* flags with dedicated subsection and Enable All Surveys button. 138 total flags now detected.",
   "updated": "2025-04-28"
 }
