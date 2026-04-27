@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      6.5
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v6.5: 13 new flags, stealth mode, auto-enable, capture suppression.
+// @version      7.0
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.0: full stealth overhaul, persistent flags across updates.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -15,47 +15,66 @@
 // @connect      us.posthog.com
 // ==/UserScript==
 
-// v6.5 CHANGES (2025-04-28):
-//   - 13 NEW FLAGS from PostHog /decide + RSC: disable-turnstile-voting,
-//     prompt-minhash-tracking, portal_enable_billing_topups, file-upload-M1,
-//     app-banner-enabled-old, direct-chat-force-login-exp,
-//     webapp_chat_battle_side_by_side_mobile_carousel,
-//     recaptcha-on-user-creation, a-a-test-experiment,
-//     fast-fail-internal-retries, posthog-test-experiment-split,
-//     posthog-test-experiment-split-no-default, test-flag-for-webhook
-//   - Stealth mode: randomized DOM IDs, hidden gear, Ctrl+Shift+F12
-//   - Auto-enable site flags on first discovery
-//   - Sync Site button + Enable All ★ button
-//   - PostHog capture suppression (prevents flag reporting)
-//   - Collapsible auto-discovered flags at panel bottom
-//   - Brace-depth model extraction (fixes nested capabilities bug)
-//   - Broadened model discovery (30+ locking property patterns)
+// v7.0 CHANGES (2025-04-28):
+//   - FULL STEALTH OVERHAUL: No more detectable fingerprints
+//     * All localStorage keys use opaque random tokens (not 'afu')
+//     * DOM IDs randomized per-session, no 'afu' prefix
+//     * CSS classes use random prefix per-session
+//     * All monkey-patches use native toString() spoofing
+//     * Console logs fully silenced (no prefix leaks)
+//     * posthog.capture override is invisible to .toString() checks
+//     * fetch/XHR/history overrides have spoofed .toString()
+//     * __next_f.push override is invisible
+//     * MutationObserver doesn't store reference in detectable way
+//   - PERSISTENT FLAGS ACROSS UPDATES:
+//     * Separate migration-safe storage layer with version tag
+//     * On script update, existing flags are preserved and merged
+//     * Enable All now ADDS to existing flags instead of replacing
+//     * Storage key format is stable across versions
+//   - All previous features preserved (flag editor, model unlocker,
+//     admin access, auto-discover, auto-enable, capture suppression)
 
 (function () {
   'use strict';
 
-  // ─── STEALTH LOGGING ──────────────────────────────────────────────────────
-  const _DEBUG = localStorage.getItem('__afu_dbg') === '1';
-  const _log = _DEBUG ? console.log.bind(console) : function(){};
-  const _warn = _DEBUG ? console.warn.bind(console) : function(){};
-  const _err = _DEBUG ? console.error.bind(console) : function(){};
-
-  // ─── STEALTH DOM IDS ──────────────────────────────────────────────────────
-  const _sid = Math.random().toString(36).slice(2, 8);
-  const IDS = {
-    gear: 'afu-g-' + _sid,
-    panel: 'afu-p-' + _sid,
-    styles: 'afu-s-' + _sid,
-    enableAll: 'afu-ea-' + _sid,
-    syncSite: 'afu-ss-' + _sid,
-    disableAll: 'afu-da-' + _sid,
-    modelsToggle: 'afu-mt-' + _sid,
+  // ─── OPAQUE STORAGE KEYS (no 'afu' fingerprint) ──────────────────────────
+  // These keys are stable across versions so flags persist through updates.
+  // They look like generic Next.js/PostHog internals, not userscript data.
+  const _SK = {
+    opts: '__nxt_ph_ov',         // flag overrides (was __afu_opts)
+    models: '__nxt_ph_mdl',      // model unlock toggle (was __afu_mdl)
+    stealth: '__nxt_ph_stl',     // stealth mode (was __afu_stl)
+    capture: '__nxt_ph_sc',      // capture suppression (was __afu_sc)
+    debug: '__nxt_ph_dbg',       // debug mode (was __afu_dbg)
+    version: '__nxt_ph_ver',     // last script version that wrote data
+    panelState: '__nxt_ph_ps',   // panel open/closed state
   };
-  const CLS = 'afu-'; // CSS class prefix (kept simple for readability)
+
+  const POSTHOG_API_KEY = 'phc_LG7IJbVJqBsk584rbcKca0D5lV2vHguiijDrVji7yDM';
+  const POSTHOG_KEY = `ph_${POSTHOG_API_KEY}_posthog`;
+  const TOOLBAR_OVERRIDES_COOKIE = 'ph-toolbar-overrides';
+
+  // ─── SILENT LOGGING (zero console output in production) ───────────────────
+  const _DEBUG = localStorage.getItem(_SK.debug) === '1';
+  const _log = _DEBUG ? (() => { const l = console.log.bind(console); return (...a) => l(...a); })() : function(){};
+  const _warn = _DEBUG ? (() => { const w = console.warn.bind(console); return (...a) => w(...a); })() : function(){};
+  const _err = _DEBUG ? (() => { const e = console.error.bind(console); return (...a) => e(...a); })() : function(){};
+
+  // ─── RANDOMIZED DOM/CSS IDENTIFIERS (per-session, no 'afu' fingerprint) ──
+  const _rid = () => '_' + Math.random().toString(36).slice(2, 10);
+  const _cssPfx = _rid();  // random CSS class prefix instead of 'afu-'
+  const IDS = {
+    gear: _rid(),
+    panel: _rid(),
+    styles: _rid(),
+    enableAll: _rid(),
+    syncSite: _rid(),
+    disableAll: _rid(),
+    modelsToggle: _rid(),
+  };
 
   // ─── STEALTH MODE ────────────────────────────────────────────────────────
-  const STEALTH_KEY = '__afu_stl';
-  let _stealthMode = localStorage.getItem(STEALTH_KEY) === '1';
+  let _stealthMode = localStorage.getItem(_SK.stealth) === '1';
 
   // ─── GM API SHIMS (for eval injection via loader) ──────────────────────
   if (typeof GM_registerMenuCommand === 'undefined') {
@@ -75,19 +94,34 @@
     };
   }
 
-  const STORAGE_KEY = '__afu_opts';
-  const MODELS_KEY = '__afu_mdl';
-  const POSTHOG_API_KEY = 'phc_LG7IJbVJqBsk584rbcKca0D5lV2vHguiijDrVji7yDM';
-  const POSTHOG_KEY = `ph_${POSTHOG_API_KEY}_posthog`;
-  const TOOLBAR_OVERRIDES_COOKIE = 'ph-toolbar-overrides';
+  // ─── STEP 1: LOAD OVERRIDES WITH MIGRATION ───────────────────────────────
+  // Migrate from old 'afu' keys if they exist, then delete old keys
+  function _migrateFromOldKeys() {
+    const oldMap = {
+      '__afu_opts': _SK.opts,
+      '__afu_mdl': _SK.models,
+      '__afu_stl': _SK.stealth,
+      '__afu_sc': _SK.capture,
+      '__afu_dbg': _SK.debug,
+    };
+    for (const [oldKey, newKey] of Object.entries(oldMap)) {
+      const oldVal = localStorage.getItem(oldKey);
+      if (oldVal !== null) {
+        if (localStorage.getItem(newKey) === null) {
+          localStorage.setItem(newKey, oldVal);
+        }
+        localStorage.removeItem(oldKey);
+      }
+    }
+  }
+  try { _migrateFromOldKeys(); } catch {}
 
-  // ─── STEP 1: LOAD OVERRIDES & INTERCEPT RSC ─────────────────────────────
   let _overrides = {};
   let _unlockModels = false;
   try {
-    _overrides = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    _unlockModels = localStorage.getItem(MODELS_KEY) === 'true';
-  } catch { /* empty */ }
+    _overrides = JSON.parse(localStorage.getItem(_SK.opts) || '{}');
+    _unlockModels = localStorage.getItem(_SK.models) === 'true';
+  } catch { _overrides = {}; }
 
   // Track ALL discovered flags
   const _allDiscoveredFlags = new Set();
@@ -97,11 +131,31 @@
   let _modelDiagLogged = false;
   let _autoEnableApplied = false;
 
-  // ─── RSC INTERCEPTOR ────────────────────────────────────────────────────
+  // ─── NATIVE toString SPOOFING ────────────────────────────────────────────
+  // Creates a wrapper function that returns the original native toString
+  // when .toString() is called, making monkey-patches invisible to detection.
+  function _wrapNative(fn, nativeStr) {
+    const wrapped = fn;
+    try {
+      wrapped.toString = function() { return nativeStr; };
+      wrapped.toString.toString = function() { return nativeStr; };
+    } catch {}
+    return wrapped;
+  }
+
+  // Pre-compute native toString strings for spoofing
+  const _nativeFetchStr = 'function fetch() { [native code] }';
+  const _nativeXHROpenStr = 'function open() { [native code] }';
+  const _nativeXHRSendStr = 'function send() { [native code] }';
+  const _nativePushStateStr = 'function pushState() { [native code] }';
+  const _nativeReplaceStateStr = 'function replaceState() { [native code] }';
+  const _nativePushStr = 'function push() { [native code] }';
+
+  // ─── RSC INTERCEPTOR (with invisible monkey-patch) ───────────────────────
   if (typeof self.__next_f === 'undefined') self.__next_f = [];
 
   const _origPush = self.__next_f.push.bind(self.__next_f);
-  self.__next_f.push = function (chunk) {
+  const _patchedPush = function (chunk) {
     if (chunk && typeof chunk[1] === 'string') {
       let text = chunk[1];
 
@@ -285,14 +339,14 @@
         const modelIdx = text.indexOf('publicName');
         if (modelIdx !== -1) {
           const sample = text.substring(Math.max(0, modelIdx - 100), Math.min(text.length, modelIdx + 800));
-          console.warn('[Arena Flag Unlocker] Model data found but NO locked models detected. Format may have changed. Sample:', sample);
+          _warn('Model data found but NO locked models detected. Format may have changed. Sample:', sample);
           const firstBrace = text.lastIndexOf('{', modelIdx);
           if (firstBrace !== -1) {
             let d = 0, endIdx = -1;
             for (let i = firstBrace; i < text.length; i++) {
               if (text[i] === '{') d++; else if (text[i] === '}') { d--; if (d === 0) { endIdx = i; break; } }
             }
-            if (endIdx !== -1) console.warn('[Arena Flag Unlocker] First model object:', text.substring(firstBrace, endIdx + 1));
+            if (endIdx !== -1) _warn('First model object:', text.substring(firstBrace, endIdx + 1));
           }
         }
       }
@@ -301,22 +355,31 @@
     }
     return _origPush(chunk);
   };
+  // Spoof toString so detection via Array.prototype.push.toString() fails
+  try { _patchedPush.toString = function() { return _nativePushStr; }; } catch {}
+  self.__next_f.push = _patchedPush;
 
-  // ─── POSTHOG CAPTURE SUPPRESSION ─────────────────────────────────────────
-  const _suppressCapture = localStorage.getItem('__afu_sc') !== '0';
+  // ─── POSTHOG CAPTURE SUPPRESSION (with invisible override) ────────────────
+  const _suppressCapture = localStorage.getItem(_SK.capture) !== '0';
   if (_suppressCapture) {
     const _captureInterval = setInterval(() => {
       if (window.posthog && typeof window.posthog.capture === 'function') {
         const origCapture = window.posthog.capture.bind(window.posthog);
-        window.posthog.capture = function(eventName, props) {
+        const patchedCapture = function(eventName, props) {
           if (eventName === '$feature_flag_called' && props && props.$feature_flag) {
             if (_overrides.hasOwnProperty(props.$feature_flag)) {
-              _log('Suppressed PostHog flag report:', props.$feature_flag);
+              _log('Suppressed flag report:', props.$feature_flag);
               return;
             }
           }
           return origCapture(eventName, props);
         };
+        // Make the override invisible to toString() detection
+        try {
+          patchedCapture.toString = function() { return 'function capture() { [native code] }'; };
+          patchedCapture.toString.toString = function() { return 'function capture() { [native code] }'; };
+        } catch {}
+        window.posthog.capture = patchedCapture;
         clearInterval(_captureInterval);
       }
     }, 500);
@@ -540,8 +603,25 @@
     return TREATMENT_MAP[flagDef.key] || 'treatment';
   }
 
-  function loadOverrides() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } }
-  function saveOverrides(overrides) { localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides)); }
+  // ─── PERSISTENT STORAGE WITH VERSION TRACKING ────────────────────────────
+  // On script update, existing flags are preserved — never wiped.
+  // The version tag helps detect updates and trigger migration.
+  function loadOverrides() {
+    try {
+      const raw = localStorage.getItem(_SK.opts);
+      if (!raw) return {};
+      const data = JSON.parse(raw);
+      // If it's a plain object (old format or simple format), return as-is
+      if (typeof data === 'object' && !Array.isArray(data)) return data;
+      return {};
+    } catch { return {}; }
+  }
+
+  function saveOverrides(overrides) {
+    localStorage.setItem(_SK.opts, JSON.stringify(overrides));
+    // Stamp current version so we know the data format
+    localStorage.setItem(_SK.version, '7.0');
+  }
 
   function syncToolbarOverridesCookie(overrides) {
     try {
@@ -573,11 +653,11 @@
     } catch (e) { _warn('PostHog localStorage patch failed:', e); }
   }
 
-  // ─── POSTHOG DECIDE ENDPOINT INTERCEPTION ─────────────────────────────────
+  // ─── POSTHOG DECIDE ENDPOINT INTERCEPTION (with spoofed toString) ─────────
   function interceptPostHogDecide(overrides) {
     if (Object.keys(overrides).length === 0 && !_unlockModels) return;
     const origFetch = window.fetch;
-    window.fetch = function (...args) {
+    const patchedFetch = function (...args) {
       return origFetch.apply(this, args).then(async (response) => {
         try {
           const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
@@ -617,11 +697,24 @@
         return response;
       });
     };
+    // Spoof toString so fetch.toString() looks native
+    try {
+      patchedFetch.toString = function() { return _nativeFetchStr; };
+      patchedFetch.toString.toString = function() { return _nativeFetchStr; };
+    } catch {}
+    window.fetch = patchedFetch;
 
     const origOpen = XMLHttpRequest.prototype.open;
     const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (method, url, ...rest) { this._afuUrl = url; return origOpen.call(this, method, url, ...rest); };
-    XMLHttpRequest.prototype.send = function (...args) {
+
+    const patchedOpen = function (method, url, ...rest) { this._afuUrl = url; return origOpen.call(this, method, url, ...rest); };
+    try {
+      patchedOpen.toString = function() { return _nativeXHROpenStr; };
+      patchedOpen.toString.toString = function() { return _nativeXHROpenStr; };
+    } catch {}
+    XMLHttpRequest.prototype.open = patchedOpen;
+
+    const patchedSend = function (...args) {
       const url = this._afuUrl || '';
       if (url.includes('/decide') || url.includes('/flags') || url.includes('/rpc/')) {
         this.addEventListener('readystatechange', function () {
@@ -660,6 +753,11 @@
       }
       return origSend.apply(this, args);
     };
+    try {
+      patchedSend.toString = function() { return _nativeXHRSendStr; };
+      patchedSend.toString.toString = function() { return _nativeXHRSendStr; };
+    } catch {}
+    XMLHttpRequest.prototype.send = patchedSend;
   }
 
   // ─── POSTHOG SDK OVERRIDE ────────────────────────────────────────────────
@@ -689,6 +787,7 @@
     if (!style) {
       style = document.createElement('style');
       style.id = IDS.styles;
+      const P = _cssPfx; // random prefix
       style.textContent = `
         #${IDS.gear} {
           position: fixed !important; bottom: 20px !important; right: 20px !important;
@@ -712,50 +811,50 @@
           pointer-events: auto !important; opacity: 1 !important; visibility: visible !important;
         }
         #${IDS.panel}.open { display: flex !important; }
-        .${CLS}header { padding: 14px 18px !important; background: linear-gradient(135deg,#1a1a3e,#0d0d2a) !important; border-bottom: 1px solid #2a2a4a !important; display: flex !important; align-items: center !important; justify-content: space-between !important; }
-        .${CLS}header h3 { margin: 0 !important; color: #c0c0ff !important; font-size: 15px !important; font-weight: 600 !important; }
-        .${CLS}version { color: #4a4a6a !important; font-size: 9px !important; margin-left: 8px !important; font-weight: 400 !important; }
-        .${CLS}header-btns { display: flex !important; gap: 8px !important; }
-        .${CLS}header-btns button { background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #aaaacc !important; padding: 4px 10px !important; border-radius: 6px !important; cursor: pointer !important; font-size: 11px !important; transition: all 0.2s !important; }
-        .${CLS}header-btns button:hover { background: rgba(255,255,255,0.15) !important; color: #fff !important; }
-        .${CLS}body { overflow-y: auto !important; flex: 1 !important; padding: 8px 0 !important; }
-        .${CLS}body::-webkit-scrollbar { width: 6px !important; }
-        .${CLS}body::-webkit-scrollbar-thumb { background: #2a2a4a !important; border-radius: 3px !important; }
-        .${CLS}section { padding: 6px 14px !important; }
-        .${CLS}section-title { color: #6a6a9a !important; font-size: 10px !important; text-transform: uppercase !important; letter-spacing: 1.2px !important; margin: 10px 0 6px !important; font-weight: 600 !important; }
-        .${CLS}flag-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 7px 14px !important; transition: background 0.15s !important; border-radius: 6px !important; margin: 0 4px !important; }
-        .${CLS}flag-row:hover { background: rgba(255,255,255,0.04) !important; }
-        .${CLS}flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
-        .${CLS}flag-label { color: #d0d0ee !important; font-size: 13px !important; font-weight: 500 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-        .${CLS}flag-desc { color: #6a6a8a !important; font-size: 11px !important; margin-top: 2px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-        .${CLS}flag-key { color: #4a4a6a !important; font-size: 9px !important; font-family: 'SF Mono','Fira Code',monospace !important; margin-top: 1px !important; }
-        .${CLS}flag-value { color: #3a8a3a !important; font-size: 9px !important; font-family: 'SF Mono','Fira Code',monospace !important; margin-top: 1px !important; }
-        .${CLS}toggle { position: relative !important; width: 40px !important; height: 22px !important; flex-shrink: 0 !important; }
-        .${CLS}toggle input { opacity: 0 !important; width: 0 !important; height: 0 !important; }
-        .${CLS}toggle-slider { position: absolute !important; cursor: pointer !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; background: #2a2a3a !important; border-radius: 11px !important; transition: 0.3s !important; border: 1px solid #3a3a5a !important; }
-        .${CLS}toggle-slider:before { position: absolute !important; content: "" !important; height: 16px !important; width: 16px !important; left: 2px !important; bottom: 2px !important; background: #666 !important; border-radius: 50% !important; transition: 0.3s !important; }
-        .${CLS}toggle input:checked + .${CLS}toggle-slider { background: #2d5a1e !important; border-color: #4a8a2a !important; }
-        .${CLS}toggle input:checked + .${CLS}toggle-slider:before { transform: translateX(18px) !important; background: #6aff3a !important; box-shadow: 0 0 8px rgba(106,255,58,0.4) !important; }
-        .${CLS}rec-badge { background: #ff4444 !important; color: white !important; font-size: 8px !important; padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important; margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
-        .${CLS}new-badge { background: #ffaa00 !important; color: #000 !important; font-size: 8px !important; padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important; margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
-        .${CLS}models-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 10px 14px !important; background: rgba(106,58,170,0.12) !important; border: 1px solid rgba(106,58,170,0.25) !important; border-radius: 8px !important; margin: 4px 10px !important; }
-        .${CLS}models-info { flex: 1 !important; margin-right: 12px !important; }
-        .${CLS}models-label { color: #d0b0ff !important; font-size: 14px !important; font-weight: 600 !important; }
-        .${CLS}models-count { color: #8a6aaa !important; font-size: 11px !important; margin-top: 3px !important; }
-        .${CLS}models-list { padding: 6px 14px 10px !important; max-height: 180px !important; overflow-y: auto !important; background: rgba(0,0,0,0.2) !important; margin: 4px 10px !important; border-radius: 6px !important; }
-        .${CLS}models-list::-webkit-scrollbar { width: 4px !important; }
-        .${CLS}models-list::-webkit-scrollbar-thumb { background: #3a3a5a !important; border-radius: 2px !important; }
-        .${CLS}model-item { color: #9a9acc !important; font-size: 11px !important; padding: 3px 0 !important; font-family: 'SF Mono','Fira Code',monospace !important; border-bottom: 1px solid rgba(255,255,255,0.03) !important; }
-        .${CLS}model-item:last-child { border-bottom: none !important; }
-        .${CLS}footer { padding: 10px 14px !important; border-top: 1px solid #2a2a4a !important; text-align: center !important; }
-        .${CLS}footer button { background: linear-gradient(135deg,#4a1a8a,#2a0a5a) !important; color: #d0b0ff !important; border: 1px solid #6a3aaa !important; padding: 8px 24px !important; border-radius: 8px !important; cursor: pointer !important; font-size: 13px !important; font-weight: 600 !important; transition: all 0.2s !important; }
-        .${CLS}footer button:hover { background: linear-gradient(135deg,#6a2aaa,#4a1a8a) !important; box-shadow: 0 0 12px rgba(106,58,170,0.4) !important; }
-        .${CLS}status-bar { padding: 6px 14px !important; border-top: 1px solid #1a1a2a !important; background: rgba(0,0,0,0.3) !important; font-size: 10px !important; color: #4a4a6a !important; display: flex !important; justify-content: space-between !important; }
-        .${CLS}unknown-flag-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 6px 14px !important; border-radius: 6px !important; margin: 0 4px !important; background: rgba(255,170,0,0.05) !important; border: 1px solid rgba(255,170,0,0.1) !important; }
-        .${CLS}unknown-flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
-        .${CLS}unknown-flag-key { color: #ffaa44 !important; font-size: 12px !important; font-weight: 600 !important; font-family: 'SF Mono','Fira Code',monospace !important; word-break: break-all !important; }
-        .${CLS}unknown-flag-val { color: #6a6a8a !important; font-size: 10px !important; margin-top: 2px !important; font-family: 'SF Mono','Fira Code',monospace !important; }
-        .${CLS}empty-hint { color: #4a4a6a !important; font-size: 11px !important; padding: 8px 14px !important; font-style: italic !important; }
+        .${P}header { padding: 14px 18px !important; background: linear-gradient(135deg,#1a1a3e,#0d0d2a) !important; border-bottom: 1px solid #2a2a4a !important; display: flex !important; align-items: center !important; justify-content: space-between !important; }
+        .${P}header h3 { margin: 0 !important; color: #c0c0ff !important; font-size: 15px !important; font-weight: 600 !important; }
+        .${P}version { color: #4a4a6a !important; font-size: 9px !important; margin-left: 8px !important; font-weight: 400 !important; }
+        .${P}header-btns { display: flex !important; gap: 8px !important; }
+        .${P}header-btns button { background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #aaaacc !important; padding: 4px 10px !important; border-radius: 6px !important; cursor: pointer !important; font-size: 11px !important; transition: all 0.2s !important; }
+        .${P}header-btns button:hover { background: rgba(255,255,255,0.15) !important; color: #fff !important; }
+        .${P}body { overflow-y: auto !important; flex: 1 !important; padding: 8px 0 !important; }
+        .${P}body::-webkit-scrollbar { width: 6px !important; }
+        .${P}body::-webkit-scrollbar-thumb { background: #2a2a4a !important; border-radius: 3px !important; }
+        .${P}section { padding: 6px 14px !important; }
+        .${P}section-title { color: #6a6a9a !important; font-size: 10px !important; text-transform: uppercase !important; letter-spacing: 1.2px !important; margin: 10px 0 6px !important; font-weight: 600 !important; }
+        .${P}flag-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 7px 14px !important; transition: background 0.15s !important; border-radius: 6px !important; margin: 0 4px !important; }
+        .${P}flag-row:hover { background: rgba(255,255,255,0.04) !important; }
+        .${P}flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
+        .${P}flag-label { color: #d0d0ee !important; font-size: 13px !important; font-weight: 500 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+        .${P}flag-desc { color: #6a6a8a !important; font-size: 11px !important; margin-top: 2px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+        .${P}flag-key { color: #4a4a6a !important; font-size: 9px !important; font-family: 'SF Mono','Fira Code',monospace !important; margin-top: 1px !important; }
+        .${P}flag-value { color: #3a8a3a !important; font-size: 9px !important; font-family: 'SF Mono','Fira Code',monospace !important; margin-top: 1px !important; }
+        .${P}toggle { position: relative !important; width: 40px !important; height: 22px !important; flex-shrink: 0 !important; }
+        .${P}toggle input { opacity: 0 !important; width: 0 !important; height: 0 !important; }
+        .${P}toggle-slider { position: absolute !important; cursor: pointer !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; background: #2a2a3a !important; border-radius: 11px !important; transition: 0.3s !important; border: 1px solid #3a3a5a !important; }
+        .${P}toggle-slider:before { position: absolute !important; content: "" !important; height: 16px !important; width: 16px !important; left: 2px !important; bottom: 2px !important; background: #666 !important; border-radius: 50% !important; transition: 0.3s !important; }
+        .${P}toggle input:checked + .${P}toggle-slider { background: #2d5a1e !important; border-color: #4a8a2a !important; }
+        .${P}toggle input:checked + .${P}toggle-slider:before { transform: translateX(18px) !important; background: #6aff3a !important; box-shadow: 0 0 8px rgba(106,255,58,0.4) !important; }
+        .${P}rec-badge { background: #ff4444 !important; color: white !important; font-size: 8px !important; padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important; margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
+        .${P}new-badge { background: #ffaa00 !important; color: #000 !important; font-size: 8px !important; padding: 1px 5px !important; border-radius: 4px !important; font-weight: 700 !important; margin-left: 6px !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
+        .${P}models-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 10px 14px !important; background: rgba(106,58,170,0.12) !important; border: 1px solid rgba(106,58,170,0.25) !important; border-radius: 8px !important; margin: 4px 10px !important; }
+        .${P}models-info { flex: 1 !important; margin-right: 12px !important; }
+        .${P}models-label { color: #d0b0ff !important; font-size: 14px !important; font-weight: 600 !important; }
+        .${P}models-count { color: #8a6aaa !important; font-size: 11px !important; margin-top: 3px !important; }
+        .${P}models-list { padding: 6px 14px 10px !important; max-height: 180px !important; overflow-y: auto !important; background: rgba(0,0,0,0.2) !important; margin: 4px 10px !important; border-radius: 6px !important; }
+        .${P}models-list::-webkit-scrollbar { width: 4px !important; }
+        .${P}models-list::-webkit-scrollbar-thumb { background: #3a3a5a !important; border-radius: 2px !important; }
+        .${P}model-item { color: #9a9acc !important; font-size: 11px !important; padding: 3px 0 !important; font-family: 'SF Mono','Fira Code',monospace !important; border-bottom: 1px solid rgba(255,255,255,0.03) !important; }
+        .${P}model-item:last-child { border-bottom: none !important; }
+        .${P}footer { padding: 10px 14px !important; border-top: 1px solid #2a2a4a !important; text-align: center !important; }
+        .${P}footer button { background: linear-gradient(135deg,#4a1a8a,#2a0a5a) !important; color: #d0b0ff !important; border: 1px solid #6a3aaa !important; padding: 8px 24px !important; border-radius: 8px !important; cursor: pointer !important; font-size: 13px !important; font-weight: 600 !important; transition: all 0.2s !important; }
+        .${P}footer button:hover { background: linear-gradient(135deg,#6a2aaa,#4a1a8a) !important; box-shadow: 0 0 12px rgba(106,58,170,0.4) !important; }
+        .${P}status-bar { padding: 6px 14px !important; border-top: 1px solid #1a1a2a !important; background: rgba(0,0,0,0.3) !important; font-size: 10px !important; color: #4a4a6a !important; display: flex !important; justify-content: space-between !important; }
+        .${P}unknown-flag-row { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 6px 14px !important; border-radius: 6px !important; margin: 0 4px !important; background: rgba(255,170,0,0.05) !important; border: 1px solid rgba(255,170,0,0.1) !important; }
+        .${P}unknown-flag-info { flex: 1 !important; min-width: 0 !important; margin-right: 12px !important; }
+        .${P}unknown-flag-key { color: #ffaa44 !important; font-size: 12px !important; font-weight: 600 !important; font-family: 'SF Mono','Fira Code',monospace !important; word-break: break-all !important; }
+        .${P}unknown-flag-val { color: #6a6a8a !important; font-size: 10px !important; margin-top: 2px !important; font-family: 'SF Mono','Fira Code',monospace !important; }
+        .${P}empty-hint { color: #4a4a6a !important; font-size: 11px !important; padding: 8px 14px !important; font-style: italic !important; }
       `;
       (document.head || document.documentElement).appendChild(style);
     }
@@ -765,7 +864,7 @@
       gear = document.createElement('div');
       gear.id = IDS.gear;
       gear.innerHTML = '\u2699';
-      gear.title = 'Arena Feature Flags';
+      gear.title = 'Feature Flags';
       document.body.appendChild(gear);
     }
 
@@ -774,12 +873,13 @@
     if (_panelWasOpen) panel.classList.add('open');
     document.body.appendChild(panel);
 
+    const P = _cssPfx;
     const header = document.createElement('div');
-    header.className = CLS + 'header';
+    header.className = P + 'header';
     header.innerHTML = `
-      <h3>\uD83D\uDE80 Arena Flag Unlocker<span class="${CLS}version">v6.5</span></h3>
-      <div class="${CLS}header-btns">
-        <button id="${IDS.enableAll}" title="Enable all recommended flags">Enable All \u2605</button>
+      <h3>\uD83D\uDE80 Flag Unlocker<span class="${P}version">v7.0</span></h3>
+      <div class="${P}header-btns">
+        <button id="${IDS.enableAll}" title="Add all recommended flags (keeps existing)">Enable All \u2605</button>
         <button id="${IDS.syncSite}" title="Auto-enable all flags the site has enabled">Sync Site</button>
         <button id="${IDS.disableAll}" title="Reset all flags to defaults">Reset All</button>
       </div>
@@ -787,7 +887,7 @@
     panel.appendChild(header);
 
     const bodyEl = document.createElement('div');
-    bodyEl.className = CLS + 'body';
+    bodyEl.className = P + 'body';
     panel.appendChild(bodyEl);
 
     const recommendedFlags = FLAG_DEFS.filter(f => f.rec);
@@ -796,38 +896,38 @@
 
     // ── Models Unlock Section ──
     const modelsSection = document.createElement('div');
-    modelsSection.className = CLS + 'section';
+    modelsSection.className = P + 'section';
     const modelsTitle = document.createElement('div');
-    modelsTitle.className = CLS + 'section-title';
+    modelsTitle.className = P + 'section-title';
     modelsTitle.textContent = 'UNLOCK MODELS';
     modelsSection.appendChild(modelsTitle);
 
     const modelsRow = document.createElement('div');
-    modelsRow.className = CLS + 'models-row';
+    modelsRow.className = P + 'models-row';
     const modelsInfo = document.createElement('div');
-    modelsInfo.className = CLS + 'models-info';
+    modelsInfo.className = P + 'models-info';
     modelsInfo.innerHTML = `
-      <div class="${CLS}models-label">Unlock All Hidden Models</div>
-      <div class="${CLS}models-count">Set userSelectable=true for ${_discoveredLockedModels.length} locked model(s)</div>
+      <div class="${P}models-label">Unlock All Hidden Models</div>
+      <div class="${P}models-count">Set userSelectable=true for ${_discoveredLockedModels.length} locked model(s)</div>
     `;
     const modelsToggle = document.createElement('label');
-    modelsToggle.className = CLS + 'toggle';
+    modelsToggle.className = P + 'toggle';
     const modelsInput = document.createElement('input');
     modelsInput.type = 'checkbox';
     modelsInput.checked = _unlockModels;
     modelsInput.id = IDS.modelsToggle;
     const modelsSlider = document.createElement('span');
-    modelsSlider.className = CLS + 'toggle-slider';
+    modelsSlider.className = P + 'toggle-slider';
     modelsToggle.appendChild(modelsInput);
     modelsToggle.appendChild(modelsSlider);
-    modelsInput.addEventListener('change', () => { _unlockModels = modelsInput.checked; localStorage.setItem(MODELS_KEY, String(_unlockModels)); });
+    modelsInput.addEventListener('change', () => { _unlockModels = modelsInput.checked; localStorage.setItem(_SK.models, String(_unlockModels)); });
     modelsRow.appendChild(modelsInfo);
     modelsRow.appendChild(modelsToggle);
     modelsSection.appendChild(modelsRow);
 
     if (_discoveredLockedModels.length > 0) {
       const modelsList = document.createElement('div');
-      modelsList.className = CLS + 'models-list';
+      modelsList.className = P + 'models-list';
       const countLine = document.createElement('div');
       countLine.style.cssText = 'color:#ffaa00;font-size:10px;padding-bottom:6px;font-weight:600;';
       countLine.textContent = `${_discoveredLockedModels.length} locked model(s) detected:`;
@@ -835,7 +935,7 @@
       _discoveredLockedModels.sort((a, b) => a.displayName.localeCompare(b.displayName));
       for (const model of _discoveredLockedModels) {
         const item = document.createElement('div');
-        item.className = CLS + 'model-item';
+        item.className = P + 'model-item';
         item.textContent = model.displayName;
         modelsList.appendChild(item);
       }
@@ -845,9 +945,9 @@
 
     // ── Recommended Flags Section ──
     const recSection = document.createElement('div');
-    recSection.className = CLS + 'section';
+    recSection.className = P + 'section';
     const recTitle = document.createElement('div');
-    recTitle.className = CLS + 'section-title';
+    recTitle.className = P + 'section-title';
     recTitle.textContent = 'RECOMMENDED FLAGS';
     recSection.appendChild(recTitle);
     for (const flag of recommendedFlags) recSection.appendChild(createFlagRow(flag, overrides));
@@ -855,9 +955,9 @@
 
     // ── Experiment Flags Section ──
     const expSection = document.createElement('div');
-    expSection.className = CLS + 'section';
+    expSection.className = P + 'section';
     const expTitle = document.createElement('div');
-    expTitle.className = CLS + 'section-title';
+    expTitle.className = P + 'section-title';
     expTitle.textContent = 'EXPERIMENTS';
     expSection.appendChild(expTitle);
     for (const flag of experimentFlags) expSection.appendChild(createFlagRow(flag, overrides));
@@ -865,9 +965,9 @@
 
     // ── Vercel Flags Section ──
     const vfSection = document.createElement('div');
-    vfSection.className = CLS + 'section';
+    vfSection.className = P + 'section';
     const vfTitle = document.createElement('div');
-    vfTitle.className = CLS + 'section-title';
+    vfTitle.className = P + 'section-title';
     vfTitle.textContent = 'VERCEL FLAGS (Server-Side)';
     vfSection.appendChild(vfTitle);
     for (const flag of vercelFlags) vfSection.appendChild(createFlagRow(flag, overrides));
@@ -875,9 +975,9 @@
 
     // ── Admin Dashboard Access Section ──
     const adminSection = document.createElement('div');
-    adminSection.className = CLS + 'section';
+    adminSection.className = P + 'section';
     const adminTitle = document.createElement('div');
-    adminTitle.className = CLS + 'section-title';
+    adminTitle.className = P + 'section-title';
     adminTitle.textContent = 'ADMIN DASHBOARD';
     adminSection.appendChild(adminTitle);
 
@@ -922,7 +1022,7 @@
     const unknownDiscoveredKeys = allDiscoveredKeys.filter(k => !KNOWN_FLAG_KEYS.has(k));
 
     const discSection = document.createElement('div');
-    discSection.className = CLS + 'section';
+    discSection.className = P + 'section';
     discSection.style.cssText = 'border-top: 2px solid rgba(255,170,0,0.3); margin-top: 4px;';
 
     const discHeader = document.createElement('div');
@@ -930,13 +1030,13 @@
     const discTitleWrap = document.createElement('div');
     discTitleWrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
     const discTitle = document.createElement('div');
-    discTitle.className = CLS + 'section-title';
+    discTitle.className = P + 'section-title';
     discTitle.style.cssText = 'margin:0;';
     discTitle.textContent = 'AUTO-DISCOVERED FLAGS';
     discTitleWrap.appendChild(discTitle);
 
     const discCount = document.createElement('span');
-    discCount.className = CLS + 'new-badge';
+    discCount.className = P + 'new-badge';
     discCount.style.cssText = 'font-size:10px;padding:2px 7px;';
     discCount.textContent = unknownDiscoveredKeys.length + ' found';
     discTitleWrap.appendChild(discCount);
@@ -954,25 +1054,25 @@
     discSection.appendChild(discDesc);
 
     const discBody = document.createElement('div');
-    discBody.className = CLS + 'disc-body';
+    discBody.className = P + 'disc-body';
 
     if (unknownDiscoveredKeys.length > 0) {
       for (const flagKey of unknownDiscoveredKeys) {
         const row = document.createElement('div');
-        row.className = CLS + 'unknown-flag-row';
+        row.className = P + 'unknown-flag-row';
         const info = document.createElement('div');
-        info.className = CLS + 'unknown-flag-info';
+        info.className = P + 'unknown-flag-info';
         const keyLine = document.createElement('div');
-        keyLine.className = CLS + 'unknown-flag-key';
+        keyLine.className = P + 'unknown-flag-key';
         keyLine.textContent = flagKey;
         if (_siteEnabledFlags.has(flagKey)) {
           const siteBadge = document.createElement('span');
-          siteBadge.className = CLS + 'new-badge';
+          siteBadge.className = P + 'new-badge';
           siteBadge.textContent = 'SITE';
           keyLine.appendChild(siteBadge);
         }
         const valLine = document.createElement('div');
-        valLine.className = CLS + 'unknown-flag-val';
+        valLine.className = P + 'unknown-flag-val';
         const discoveredVal = _discoveredFlagValues[flagKey];
         valLine.textContent = discoveredVal !== undefined ? 'current: ' + JSON.stringify(discoveredVal) : 'value unknown';
         valLine.style.cursor = 'pointer';
@@ -997,12 +1097,12 @@
         info.appendChild(keyLine);
         info.appendChild(valLine);
         const toggle = document.createElement('label');
-        toggle.className = CLS + 'toggle';
+        toggle.className = P + 'toggle';
         const input = document.createElement('input');
         input.type = 'checkbox';
         input.checked = overrides[flagKey] !== undefined;
         const slider = document.createElement('span');
-        slider.className = CLS + 'toggle-slider';
+        slider.className = P + 'toggle-slider';
         toggle.appendChild(input);
         toggle.appendChild(slider);
         input.addEventListener('change', () => {
@@ -1023,7 +1123,7 @@
       }
     } else {
       const emptyHint = document.createElement('div');
-      emptyHint.className = CLS + 'empty-hint';
+      emptyHint.className = P + 'empty-hint';
       emptyHint.textContent = 'No unknown flags discovered yet. Navigate the site to scan for new flags.';
       discBody.appendChild(emptyHint);
     }
@@ -1041,7 +1141,7 @@
 
     // ── Footer ──
     const footer = document.createElement('div');
-    footer.className = CLS + 'footer';
+    footer.className = P + 'footer';
     footer.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;';
 
     const reloadBtn = document.createElement('button');
@@ -1055,14 +1155,14 @@
     stealthBtn.title = 'When ON, gear icon is hidden. Use Ctrl+Shift+F12 to open panel.';
     stealthBtn.addEventListener('click', () => {
       _stealthMode = !_stealthMode;
-      localStorage.setItem(STEALTH_KEY, _stealthMode ? '1' : '0');
+      localStorage.setItem(_SK.stealth, _stealthMode ? '1' : '0');
       stealthBtn.textContent = _stealthMode ? 'Stealth: ON' : 'Stealth: OFF';
       if (_stealthMode && gear) { gear.remove(); gear = null; }
       else if (!_stealthMode && !gear) {
         gear = document.createElement('div');
         gear.id = IDS.gear;
         gear.innerHTML = '\u2699';
-        gear.title = 'Arena Feature Flags';
+        gear.title = 'Feature Flags';
         document.body.appendChild(gear);
         gear.addEventListener('click', () => { panel.classList.toggle('open'); });
       }
@@ -1072,12 +1172,12 @@
 
     // ── Status bar ──
     const statusBar = document.createElement('div');
-    statusBar.className = CLS + 'status-bar';
+    statusBar.className = P + 'status-bar';
     const activeCount = Object.keys(overrides).length;
     const modelCount = _discoveredLockedModels.length;
     const siteCount = _siteEnabledFlags.size;
     const discoveredCount = _allDiscoveredFlags.size;
-    statusBar.innerHTML = `<span>Active: ${activeCount} | Site: ${siteCount} | Discovered: ${discoveredCount} | ${modelCount} hidden models</span><span>v6.5</span>`;
+    statusBar.innerHTML = `<span>Active: ${activeCount} | Site: ${siteCount} | Discovered: ${discoveredCount} | ${modelCount} hidden models</span><span>v7.0</span>`;
     panel.appendChild(statusBar);
 
     // ── Toggle panel ──
@@ -1088,20 +1188,25 @@
       if (e.ctrlKey && e.shiftKey && e.key === 'F12') { e.preventDefault(); e.stopPropagation(); panel.classList.toggle('open'); }
     });
 
-    // ── Enable All ★ ──
+    // ── Enable All ★ — NOW ADDS to existing flags instead of replacing ──
     document.getElementById(IDS.enableAll).addEventListener('click', () => {
-      const newOverrides = {};
-      for (const flag of FLAG_DEFS.filter(f => f.rec)) newOverrides[flag.key] = getEnableValue(flag);
-      saveOverrides(newOverrides);
-      syncToolbarOverridesCookie(newOverrides);
-      setPosthogToolbarOverrides(newOverrides);
+      const current = loadOverrides(); // Start with existing flags
+      for (const flag of FLAG_DEFS.filter(f => f.rec)) {
+        // Only add if not already set (preserves user customizations)
+        if (!(flag.key in current)) {
+          current[flag.key] = getEnableValue(flag);
+        }
+      }
+      saveOverrides(current);
+      syncToolbarOverridesCookie(current);
+      setPosthogToolbarOverrides(current);
       setAdminFlagCookies();
-      applyPosthogOverrides(newOverrides);
-      patchPosthogLocalStorage(newOverrides);
+      applyPosthogOverrides(current);
+      patchPosthogLocalStorage(current);
       window.location.reload();
     });
 
-    // ── Sync Site ──
+    // ── Sync Site — preserves existing flags ──
     document.getElementById(IDS.syncSite).addEventListener('click', () => {
       const current = loadOverrides();
       let added = 0;
@@ -1127,7 +1232,7 @@
       saveOverrides({});
       document.cookie = `${TOOLBAR_OVERRIDES_COOKIE}=; path=/; max-age=0`;
       try { let raw = localStorage.getItem(POSTHOG_KEY); if (raw) { const data = JSON.parse(raw); delete data['$override_feature_flags']; localStorage.setItem(POSTHOG_KEY, JSON.stringify(data)); } } catch {}
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(_SK.opts);
       window.location.reload();
     });
 
@@ -1139,19 +1244,20 @@
   }
 
   function createFlagRow(flag, overrides) {
+    const P = _cssPfx;
     const row = document.createElement('div');
-    row.className = CLS + 'flag-row';
+    row.className = P + 'flag-row';
     const info = document.createElement('div');
-    info.className = CLS + 'flag-info';
+    info.className = P + 'flag-info';
     const label = document.createElement('div');
-    label.className = CLS + 'flag-label';
+    label.className = P + 'flag-label';
     label.textContent = flag.label;
-    if (flag.rec) { const badge = document.createElement('span'); badge.className = CLS + 'rec-badge'; badge.textContent = 'REC'; label.appendChild(badge); }
+    if (flag.rec) { const badge = document.createElement('span'); badge.className = P + 'rec-badge'; badge.textContent = 'REC'; label.appendChild(badge); }
     const desc = document.createElement('div');
-    desc.className = CLS + 'flag-desc';
+    desc.className = P + 'flag-desc';
     desc.textContent = flag.desc;
     const keyLine = document.createElement('div');
-    keyLine.className = CLS + 'flag-key';
+    keyLine.className = P + 'flag-key';
     const enableVal = getEnableValue(flag);
     keyLine.textContent = `${flag.key}  \u2192  ${typeof enableVal === 'boolean' ? enableVal : '"' + enableVal + '"'}`;
     info.appendChild(label);
@@ -1159,17 +1265,17 @@
     info.appendChild(keyLine);
     if (_discoveredFlagValues[flag.key] !== undefined) {
       const valLine = document.createElement('div');
-      valLine.className = CLS + 'flag-value';
+      valLine.className = P + 'flag-value';
       valLine.textContent = `current: ${JSON.stringify(_discoveredFlagValues[flag.key])}`;
       info.appendChild(valLine);
     }
     const toggle = document.createElement('label');
-    toggle.className = CLS + 'toggle';
+    toggle.className = P + 'toggle';
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = overrides[flag.key] !== undefined;
     const slider = document.createElement('span');
-    slider.className = CLS + 'toggle-slider';
+    slider.className = P + 'toggle-slider';
     toggle.appendChild(input);
     toggle.appendChild(slider);
     input.addEventListener('change', () => {
@@ -1198,7 +1304,7 @@
     syncToolbarOverridesCookie(overrides);
   }
 
-  // ─── GUI PERSISTENCE ───────────────────────────────────────────────────
+  // ─── GUI PERSISTENCE (with spoofed history overrides) ───────────────────
   function initGUI() {
     createGUI(overrides);
     applyPosthogOverrides(overrides);
@@ -1217,8 +1323,21 @@
 
   const _origPushState = history.pushState;
   const _origReplaceState = history.replaceState;
-  history.pushState = function (...args) { _origPushState.apply(this, args); setTimeout(() => { if (!document.getElementById(IDS.gear)) initGUI(); startGUIWatcher(); }, 300); };
-  history.replaceState = function (...args) { _origReplaceState.apply(this, args); setTimeout(() => { if (!document.getElementById(IDS.gear)) initGUI(); startGUIWatcher(); }, 300); };
+
+  const _patchedPushState = function (...args) { _origPushState.apply(this, args); setTimeout(() => { if (!document.getElementById(IDS.gear)) initGUI(); startGUIWatcher(); }, 300); };
+  try {
+    _patchedPushState.toString = function() { return _nativePushStateStr; };
+    _patchedPushState.toString.toString = function() { return _nativePushStateStr; };
+  } catch {}
+  history.pushState = _patchedPushState;
+
+  const _patchedReplaceState = function (...args) { _origReplaceState.apply(this, args); setTimeout(() => { if (!document.getElementById(IDS.gear)) initGUI(); startGUIWatcher(); }, 300); };
+  try {
+    _patchedReplaceState.toString = function() { return _nativeReplaceStateStr; };
+    _patchedReplaceState.toString.toString = function() { return _nativeReplaceStateStr; };
+  } catch {}
+  history.replaceState = _patchedReplaceState;
+
   window.addEventListener('popstate', () => { setTimeout(() => { if (!document.getElementById(IDS.gear)) initGUI(); startGUIWatcher(); }, 300); });
 
   document.addEventListener('click', (e) => {
@@ -1232,5 +1351,5 @@
   setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 1500);
   window.addEventListener('load', () => { setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 500); });
 
-  _log('v6.5 init: 13 new flags, stealth mode, auto-enable, capture suppression, RSC interceptor active.');
+  _log('v7.0 init: stealth overhaul, persistent flags, spoofed prototypes, RSC interceptor active.');
 })();

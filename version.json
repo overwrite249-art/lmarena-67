@@ -1,5 +1,5 @@
 {
-  "version": "6.5",
-  "changelog": "v6.5: 13 new flags from PostHog (disable-turnstile-voting, prompt-minhash-tracking, billing topups, etc.). Stealth mode, auto-enable, capture suppression, collapsible auto-discovered section at bottom.",
+  "version": "7.0",
+  "changelog": "v7.0: Full stealth overhaul — opaque localStorage keys (no 'afu' fingerprint), random DOM/CSS IDs per session, native toString() spoofing on all monkey-patches (fetch, XHR, history, __next_f.push, posthog.capture). Flag persistence across updates — Enable All now adds to existing flags instead of replacing. Auto-migration from old keys.",
   "updated": "2025-04-28"
 }
