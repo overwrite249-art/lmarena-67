@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      7.0
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.0: full stealth overhaul, persistent flags across updates.
+// @version      7.1
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.1: always undetectable, no stealth toggle, persistent flags.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -15,22 +15,20 @@
 // @connect      us.posthog.com
 // ==/UserScript==
 
-// v7.0 CHANGES (2025-04-28):
-//   - FULL STEALTH OVERHAUL: No more detectable fingerprints
-//     * All localStorage keys use opaque random tokens (not 'afu')
-//     * DOM IDs randomized per-session, no 'afu' prefix
+// v7.1 CHANGES (2025-04-28):
+//   - ALWAYS UNDETECTABLE (no stealth toggle — just invisible by design):
+//     * All localStorage keys use opaque names (no 'afu' fingerprint)
+//     * DOM IDs randomized per-session
 //     * CSS classes use random prefix per-session
 //     * All monkey-patches use native toString() spoofing
 //     * Console logs fully silenced (no prefix leaks)
-//     * posthog.capture override is invisible to .toString() checks
+//     * posthog.capture override invisible to .toString() checks
 //     * fetch/XHR/history overrides have spoofed .toString()
 //     * __next_f.push override is invisible
-//     * MutationObserver doesn't store reference in detectable way
 //   - PERSISTENT FLAGS ACROSS UPDATES:
-//     * Separate migration-safe storage layer with version tag
-//     * On script update, existing flags are preserved and merged
 //     * Enable All now ADDS to existing flags instead of replacing
 //     * Storage key format is stable across versions
+//   - Removed stealth toggle — undetectability is always on
 //   - All previous features preserved (flag editor, model unlocker,
 //     admin access, auto-discover, auto-enable, capture suppression)
 
@@ -43,7 +41,6 @@
   const _SK = {
     opts: '__nxt_ph_ov',         // flag overrides (was __afu_opts)
     models: '__nxt_ph_mdl',      // model unlock toggle (was __afu_mdl)
-    stealth: '__nxt_ph_stl',     // stealth mode (was __afu_stl)
     capture: '__nxt_ph_sc',      // capture suppression (was __afu_sc)
     debug: '__nxt_ph_dbg',       // debug mode (was __afu_dbg)
     version: '__nxt_ph_ver',     // last script version that wrote data
@@ -73,9 +70,6 @@
     modelsToggle: _rid(),
   };
 
-  // ─── STEALTH MODE ────────────────────────────────────────────────────────
-  let _stealthMode = localStorage.getItem(_SK.stealth) === '1';
-
   // ─── GM API SHIMS (for eval injection via loader) ──────────────────────
   if (typeof GM_registerMenuCommand === 'undefined') {
     window.GM_registerMenuCommand = function () {};
@@ -100,7 +94,7 @@
     const oldMap = {
       '__afu_opts': _SK.opts,
       '__afu_mdl': _SK.models,
-      '__afu_stl': _SK.stealth,
+      '__afu_stl': '__nxt_ph_stl', // legacy stealth key, just delete it
       '__afu_sc': _SK.capture,
       '__afu_dbg': _SK.debug,
     };
@@ -860,13 +854,11 @@
     }
 
     let gear = null;
-    if (!_stealthMode) {
-      gear = document.createElement('div');
-      gear.id = IDS.gear;
-      gear.innerHTML = '\u2699';
-      gear.title = 'Feature Flags';
-      document.body.appendChild(gear);
-    }
+    gear = document.createElement('div');
+    gear.id = IDS.gear;
+    gear.innerHTML = '\u2699';
+    gear.title = 'Feature Flags';
+    document.body.appendChild(gear);
 
     const panel = document.createElement('div');
     panel.id = IDS.panel;
@@ -1149,25 +1141,7 @@
     reloadBtn.addEventListener('click', () => { syncToolbarOverridesCookie(overrides); setAdminFlagCookies(); window.location.reload(); });
     footer.appendChild(reloadBtn);
 
-    const stealthBtn = document.createElement('button');
-    stealthBtn.style.cssText = 'background:rgba(255,60,60,0.15)!important;border:1px solid rgba(255,60,60,0.3)!important;color:#ff8888!important;font-size:10px!important;padding:6px 12px!important;';
-    stealthBtn.textContent = _stealthMode ? 'Stealth: ON' : 'Stealth: OFF';
-    stealthBtn.title = 'When ON, gear icon is hidden. Use Ctrl+Shift+F12 to open panel.';
-    stealthBtn.addEventListener('click', () => {
-      _stealthMode = !_stealthMode;
-      localStorage.setItem(_SK.stealth, _stealthMode ? '1' : '0');
-      stealthBtn.textContent = _stealthMode ? 'Stealth: ON' : 'Stealth: OFF';
-      if (_stealthMode && gear) { gear.remove(); gear = null; }
-      else if (!_stealthMode && !gear) {
-        gear = document.createElement('div');
-        gear.id = IDS.gear;
-        gear.innerHTML = '\u2699';
-        gear.title = 'Feature Flags';
-        document.body.appendChild(gear);
-        gear.addEventListener('click', () => { panel.classList.toggle('open'); });
-      }
-    });
-    footer.appendChild(stealthBtn);
+
     panel.appendChild(footer);
 
     // ── Status bar ──
@@ -1351,5 +1325,5 @@
   setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 1500);
   window.addEventListener('load', () => { setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 500); });
 
-  _log('v7.0 init: stealth overhaul, persistent flags, spoofed prototypes, RSC interceptor active.');
+  _log('v7.1 init: always undetectable, persistent flags, spoofed prototypes, RSC interceptor active.');
 })();
