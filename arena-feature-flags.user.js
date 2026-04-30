@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      7.2
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.2: 66 new flags from PostHog decide endpoint, survey targeting section.
+// @version      7.3
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.3: Proactive flag discovery - direct PostHog decide probing, JS bundle scanning, deep RSC scan.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -15,6 +15,20 @@
 // @connect      us.posthog.com
 // ==/UserScript==
 
+// v7.3 CHANGES (2025-04-30):
+//   - PROACTIVE FLAG DISCOVERY (finds truly unknown/hidden flags):
+//     * Direct PostHog /decide probing with varied user properties
+//       (admin, internal, staff, beta, etc.) to reveal flags only
+//       shown to specific user segments
+//     * JS bundle scanning — fetches and parses all JS chunks for
+//       getFeatureFlag(), isFeatureEnabled(), flag key references
+//     * Deep RSC scan — scans ALL RSC payload text (not just
+//       posthogFlags/vercelFlags sections) for flag-like key-value pairs
+//     * "Deep Scan" button in UI for manual trigger
+//     * Auto-scan on init + periodic background re-scan
+//     * Discovered unknown flags persist across page navigations
+//   - All previous features preserved
+//
 // v7.1 CHANGES (2025-04-28):
 //   - ALWAYS UNDETECTABLE (no stealth toggle — just invisible by design):
 //     * All localStorage keys use opaque names (no 'afu' fingerprint)
@@ -45,9 +59,11 @@
     debug: '__nxt_ph_dbg',       // debug mode (was __afu_dbg)
     version: '__nxt_ph_ver',     // last script version that wrote data
     panelState: '__nxt_ph_ps',   // panel open/closed state
+    discovered: '__nxt_ph_dsc',  // proactively discovered unknown flags
   };
 
   const POSTHOG_API_KEY = 'phc_LG7IJbVJqBsk584rbcKca0D5lV2vHguiijDrVji7yDM';
+  const POSTHOG_HOST = 'us.i.posthog.com';
   const POSTHOG_KEY = `ph_${POSTHOG_API_KEY}_posthog`;
   const TOOLBAR_OVERRIDES_COOKIE = 'ph-toolbar-overrides';
 
@@ -68,6 +84,7 @@
     syncSite: _rid(),
     disableAll: _rid(),
     modelsToggle: _rid(),
+    deepScan: _rid(),
   };
 
   // ─── GM API SHIMS (for eval injection via loader) ──────────────────────
@@ -124,6 +141,29 @@
   const _siteEnabledFlags = new Set();
   let _modelDiagLogged = false;
   let _autoEnableApplied = false;
+
+  // ─── PROACTIVE DISCOVERY STATE ──────────────────────────────────────────
+  // Tracks flags found by proactive scanning (not from normal passive discovery)
+  const _proactiveDiscovered = {};  // key -> { value, source }
+  let _proactiveScanDone = false;
+  let _proactiveScanRunning = false;
+  let _deepScanCount = 0;
+
+  // Load previously discovered unknown flags from storage
+  try {
+    const stored = JSON.parse(localStorage.getItem(_SK.discovered) || '{}');
+    if (typeof stored === 'object') {
+      for (const [k, v] of Object.entries(stored)) {
+        _proactiveDiscovered[k] = v;
+        _allDiscoveredFlags.add(k);
+        if (v.value !== undefined) _discoveredFlagValues[k] = v.value;
+      }
+    }
+  } catch {}
+
+  function _saveProactiveDiscovered() {
+    try { localStorage.setItem(_SK.discovered, JSON.stringify(_proactiveDiscovered)); } catch {}
+  }
 
   // ─── NATIVE toString SPOOFING ────────────────────────────────────────────
   // Creates a wrapper function that returns the original native toString
@@ -305,6 +345,41 @@
           }
         }
       }
+
+      // ── Deep RSC scan: scan ENTIRE payload for flag-like key-value pairs ──
+      // This catches flags embedded in unusual locations, not just in
+      // the posthogFlags/vercelFlags sections. Only looks for keys NOT
+      // already known or discovered, filtering out common non-flag keys.
+      try {
+        const _DEEP_FLAG_PATTERNS = [
+          // Matches "some-flag-key":"treatment*" or "control" or "$undefined" etc.
+          /"([a-z][a-z0-9_-]{2,40})"\s*:\s*"(treatment[-_]?[0-9]*|control|enabled|disabled|\$undefined|[a-z]+-enabled|[a-z]+-disabled)"/g,
+          // Matches "some-flag-key":true or "some-flag-key":false (only outside known flag sections)
+          /"([a-z][a-z0-9_-]{2,40})"\s*:\s*(true|false)/g,
+        ];
+        for (const pattern of _DEEP_FLAG_PATTERNS) {
+          let dm;
+          while ((dm = pattern.exec(text)) !== null) {
+            const fk = dm[1];
+            if (_NON_FLAG_KEYS.has(fk)) continue;
+            if (KNOWN_FLAG_KEYS.has(fk) || isSurveyFlag(fk)) continue;
+            if (_allDiscoveredFlags.has(fk)) continue;
+            // Filter out common non-flag keys by checking if they look like
+            // actual feature flags (kebab-case with specific patterns)
+            if (!/[-_]/.test(fk) && !/^(is|has|can|should|use|enable|disable|allow|block|show|hide|force|skip|auto|new|beta|alpha|dev|test|debug|internal|admin|staff|pro|plus|premium|vip|experimental|early|pilot|trial|flag|feature)/.test(fk)) continue;
+            // Looks like a feature flag — add it
+            let val = dm[2];
+            if (val === 'true') val = true;
+            else if (val === 'false') val = false;
+            _allDiscoveredFlags.add(fk);
+            _discoveredFlagValues[fk] = val;
+            if (!_proactiveDiscovered[fk]) {
+              _proactiveDiscovered[fk] = { value: val, source: 'deep-rsc' };
+              _saveProactiveDiscovered();
+            }
+          }
+        }
+      } catch (e) { _warn('Deep RSC scan error:', e); }
 
       // ── Auto-enable site flags on first discovery ──
       if (!_autoEnableApplied && _siteEnabledFlags.size > 0) {
@@ -779,6 +854,341 @@
     XMLHttpRequest.prototype.send = patchedSend;
   }
 
+  // ─── PROACTIVE FLAG DISCOVERY ENGINE ────────────────────────────────────
+  // Actively discovers unknown/hidden flags using multiple methods:
+  // 1. Direct PostHog /decide probing with varied user properties
+  // 2. JavaScript bundle scanning for flag key references
+  // 3. PostHog /flags endpoint probing
+
+  function _registerProactiveFlag(key, value, source) {
+    if (KNOWN_FLAG_KEYS.has(key) || isSurveyFlag(key)) return false;
+    if (_NON_FLAG_GLOBAL.has(key)) return false;
+    const wasNew = !_allDiscoveredFlags.has(key);
+    _allDiscoveredFlags.add(key);
+    if (value !== undefined) _discoveredFlagValues[key] = value;
+    if (!_proactiveDiscovered[key]) {
+      _proactiveDiscovered[key] = { value: value, source: source };
+      _saveProactiveDiscovered();
+    }
+    return wasNew;
+  }
+
+  // Global set of non-flag keys to filter out (defined once, used by deep scans)
+  const _NON_FLAG_GLOBAL = new Set([
+    'parallelRouterKey','error','errorStyles','errorScripts',
+    'templateStyles','templateScripts','forbidden','unauthorized',
+    'notFound','children','template','id','name','className',
+    'key','ref','props','type','content','href','src',
+    'style','action','method','target','rel','as','crossOrigin',
+    'integrity','nonce','seed','initialModels','initialSeed',
+    'modalities','models','capabilities','inputCapabilities',
+    'outputCapabilities','rank','rankByModality','organization',
+    'provider','publicName','displayName','userSelectable',
+    'text','image','file','web','video','search',
+    'multipleImages','requiresUpload','required','aspectRatios',
+    'chat','webdev','posthogFlags','vercelFlags',
+    // Common non-flag keys that appear in RSC payloads
+    'createdAt','updatedAt','deletedAt','expiresAt','startedAt','endedAt',
+    'publishedAt','modifiedAt','accessedAt','lastUsed','firstSeen',
+    'source','destination','category','priority','weight','score','rating',
+    'latitude','longitude','timezone','locale','currency','language',
+    'firstName','lastName','fullName','displayName','username','nickname',
+    'email','phone','address','city','state','country','zip','postal',
+    'company','team','group','department','division','section','unit',
+    'title','subtitle','description','summary','overview','details',
+    'icon','logo','avatar','thumbnail','banner','cover','background',
+    'width','height','size','length','depth','thickness','radius','diameter',
+    'color','opacity','visibility','display','position','alignment','spacing',
+    'margin','padding','border','outline','shadow','gradient','blend',
+    'font','text','line','letter','word','paragraph','heading','caption',
+    'animation','transition','duration','delay','easing','direction','loop',
+    'transform','rotation','scale','translate','rotate','skew','origin',
+  ]);
+
+  // ── Method 1: Direct PostHog /decide probing ──
+  // Sends /decide requests with varied user properties to reveal flags
+  // that are only shown to specific user segments (admin, internal, staff, etc.)
+  function probePostHogDecide() {
+    // Different persona profiles to try — each may unlock different flag sets
+    const personas = [
+      { person_props: { is_admin: true, is_internal: true, role: 'admin', staff: true } },
+      { person_props: { is_staff: true, is_beta_tester: true, early_access: true } },
+      { person_props: { is_pro: true, subscription: 'premium', plan: 'enterprise' } },
+      { person_props: { is_developer: true, dev_mode: true, internal: true } },
+      { person_props: { country: 'US', region: 'us-west', tier: '1' } },
+      { person_props: { is_vip: true, is_founder: true, employee: true } },
+      // Empty props to get default flags
+      {},
+    ];
+
+    const distinctId = 'proactive-' + Math.random().toString(36).slice(2, 10);
+
+    for (let i = 0; i < personas.length; i++) {
+      const persona = personas[i];
+      const payload = {
+        token: POSTHOG_API_KEY,
+        distinct_id: distinctId + '-' + i,
+        event: '$pageview',
+        properties: {
+          $os: 'Mac OS X',
+          $browser: 'Chrome',
+          $device_type: 'Desktop',
+          ...persona.person_props,
+        },
+      };
+
+      // Try the proxied endpoint first (same origin, more likely to work)
+      const decideUrl = window.location.origin + '/rpc/decide/?v=3';
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: decideUrl,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify(payload),
+        onload: function(response) {
+          try {
+            const data = JSON.parse(response.responseText);
+            if (data.featureFlags) {
+              let newCount = 0;
+              for (const [fk, fv] of Object.entries(data.featureFlags)) {
+                if (_registerProactiveFlag(fk, fv, 'decide-probe')) newCount++;
+              }
+              if (newCount > 0) _log('Decide probe persona ' + i + ': found ' + newCount + ' new flags');
+            }
+            // Also check for flagsInActiveExperiments and local flags
+            if (data.flags) {
+              for (const [fk, fv] of Object.entries(data.flags)) {
+                _registerProactiveFlag(fk, fv, 'decide-probe-flags');
+              }
+            }
+          } catch (e) { _warn('Decide probe parse error:', e); }
+        },
+        onerror: function() { _warn('Decide probe network error'); },
+      });
+
+      // Also try direct PostHog endpoint (may reveal flags not proxied)
+      const directUrl = 'https://' + POSTHOG_HOST + '/decide/?v=3';
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: directUrl,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify(payload),
+        onload: function(response) {
+          try {
+            const data = JSON.parse(response.responseText);
+            if (data.featureFlags) {
+              let newCount = 0;
+              for (const [fk, fv] of Object.entries(data.featureFlags)) {
+                if (_registerProactiveFlag(fk, fv, 'decide-direct')) newCount++;
+              }
+              if (newCount > 0) _log('Direct decide persona ' + i + ': found ' + newCount + ' new flags');
+            }
+          } catch {}
+        },
+        onerror: function() {},
+      });
+    }
+  }
+
+  // ── Method 2: JavaScript bundle scanning ──
+  // Fetches the site's JS bundles and searches for flag key references
+  // like getFeatureFlag("flag-name"), isFeatureEnabled("flag-name"), etc.
+  function scanJSBundles() {
+    // First, get the page HTML to find JS bundle URLs
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: window.location.origin + '/',
+      headers: { 'Accept': 'text/html' },
+      onload: function(response) {
+        const html = response.responseText || '';
+        const urls = new Set();
+
+        // Find script src URLs
+        const srcRegex = /src=["']([^"']*\/_next\/static\/[^"']*\.js[^"']*)["']/g;
+        let m;
+        while ((m = srcRegex.exec(html)) !== null) {
+          let url = m[1];
+          if (!url.startsWith('http')) url = window.location.origin + url;
+          urls.add(url);
+        }
+
+        // Also find chunk URLs in the build manifest
+        const chunkRegex = /["'](\/_next\/static\/[^"']+\.js)["']/g;
+        while ((m = chunkRegex.exec(html)) !== null) {
+          let url = m[1];
+          if (!url.startsWith('http')) url = window.location.origin + url;
+          urls.add(url);
+        }
+
+        _log('JS bundle scan: found ' + urls.size + ' bundle URLs');
+
+        // Scan each bundle (limit to 30 to avoid overload)
+        const urlArr = [...urls].slice(0, 30);
+        let scanned = 0;
+        for (const url of urlArr) {
+          scanSingleBundle(url, () => {
+            scanned++;
+            if (scanned === urlArr.length) {
+              _log('JS bundle scan complete: ' + urlArr.length + ' bundles scanned');
+            }
+          });
+        }
+      },
+      onerror: function() { _warn('JS bundle scan: failed to fetch page HTML'); },
+    });
+
+    // Also try the build manifest directly
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: window.location.origin + '/_next/static/chunks-manifest.json',
+      onload: function(response) {
+        try {
+          const manifest = JSON.parse(response.responseText);
+          const urls = new Set();
+          for (const [, path] of Object.entries(manifest)) {
+            let url = typeof path === 'string' ? path : '';
+            if (url.endsWith('.js')) {
+              if (!url.startsWith('http')) url = window.location.origin + url;
+              urls.add(url);
+            }
+          }
+          for (const url of [...urls].slice(0, 30)) {
+            scanSingleBundle(url);
+          }
+        } catch {}
+      },
+      onerror: function() {},
+    });
+  }
+
+  function scanSingleBundle(url, callback) {
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: url,
+      timeout: 15000,
+      onload: function(response) {
+        const js = response.responseText || '';
+        let newCount = 0;
+
+        // Pattern: getFeatureFlag("flag-name") or getFeatureFlag('flag-name')
+        const getFlagRegex = /getFeatureFlag\s*\(\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']/g;
+        let m;
+        while ((m = getFlagRegex.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-getFeatureFlag')) newCount++;
+        }
+
+        // Pattern: isFeatureEnabled("flag-name")
+        const isEnabledRegex = /isFeatureEnabled\s*\(\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']/g;
+        while ((m = isEnabledRegex.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-isFeatureEnabled')) newCount++;
+        }
+
+        // Pattern: featureFlags["flag-name"] or featureFlags.flagName
+        const flagAccessRegex = /featureFlags\s*\[\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']\s*\]/g;
+        while ((m = flagAccessRegex.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-featureFlags')) newCount++;
+        }
+
+        // Pattern: useFeatureFlag("flag-name") or useFeatureFlagIdentifier
+        const useFlagRegex = /useFeatureFlag(?:Identifier)?\s*\(\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']/g;
+        while ((m = useFlagRegex.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-useFeatureFlag')) newCount++;
+        }
+
+        // Pattern: useFlag("flag-name") (common in Next.js apps)
+        const useFlagRegex2 = /useFlag\s*\(\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']/g;
+        while ((m = useFlagRegex2.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-useFlag')) newCount++;
+        }
+
+        // Pattern: flag("flag-name") (Vercel Flags SDK)
+        const vercelFlagRegex = /flag\s*\(\s*["']([a-zA-Z][a-zA-Z0-9_-]{2,50})["']/g;
+        while ((m = vercelFlagRegex.exec(js)) !== null) {
+          if (_registerProactiveFlag(m[1], undefined, 'js-bundle-vercelFlag')) newCount++;
+        }
+
+        // Pattern: string literals that match common feature flag naming conventions
+        // e.g., "some-feature-experiment", "enable-something", "use-new-whatever"
+        const flagStringRegex = /["']([a-z][a-z0-9]*(?:-[a-z0-9]+){2,})["']/g;
+        while ((m = flagStringRegex.exec(js)) !== null) {
+          const fk = m[1];
+          // Only if it contains flag-like keywords
+          if (/^(enable|disable|use|new|show|hide|force|skip|auto|beta|alpha|dev|test|feature|flag|experiment|modality|arena|model|chat|webdev|video|image|code|voting|login|auth|admin|internal|staff|pro|premium|survey|recaptcha|turnstile|credit|billing|upload|document|redirect|brand|dnn|p2l|pointwise|archive|notification|opinion|direct|battle|mobile|carousel|selector|workflow|rate|limit|gate|experience|email|captcha)/.test(fk) && fk.length > 8 && fk.length < 60) {
+            if (_registerProactiveFlag(fk, undefined, 'js-bundle-string')) newCount++;
+          }
+        }
+
+        if (newCount > 0) _log('Bundle scan ' + url.slice(-40) + ': found ' + newCount + ' new flag keys');
+        if (callback) callback();
+      },
+      onerror: function() { if (callback) callback(); },
+      ontimeout: function() { if (callback) callback(); },
+    });
+  }
+
+  // ── Method 3: PostHog /flags endpoint probing ──
+  // Try to access the PostHog feature flag definitions endpoint
+  function probePostHogFlagsEndpoint() {
+    // PostHog has a /flags endpoint that returns all feature flag definitions
+    // Try both the proxied and direct versions
+    const endpoints = [
+      window.location.origin + '/rpc/flags/',
+      'https://' + POSTHOG_HOST + '/api/feature_flag/',
+      'https://' + POSTHOG_HOST + '/flags/',
+    ];
+
+    for (const url of endpoints) {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: url,
+        timeout: 8000,
+        onload: function(response) {
+          try {
+            const data = JSON.parse(response.responseText);
+            // PostHog API returns flags as an array or object
+            const flags = data.results || data.flags || data.featureFlags || (Array.isArray(data) ? data : []);
+            if (Array.isArray(flags)) {
+              for (const flag of flags) {
+                if (flag.key) {
+                  _registerProactiveFlag(flag.key, flag.active !== false ? (flag.rollout_percentage === 100 ? true : undefined) : false, 'flags-api');
+                }
+              }
+            } else if (typeof flags === 'object') {
+              for (const [fk, fv] of Object.entries(flags)) {
+                _registerProactiveFlag(fk, typeof fv === 'object' ? undefined : fv, 'flags-api');
+              }
+            }
+          } catch {}
+        },
+        onerror: function() {},
+        ontimeout: function() {},
+      });
+    }
+  }
+
+  // ── Run all proactive discovery methods ──
+  function runProactiveDiscovery(force) {
+    if (!force && _proactiveScanDone) return;
+    if (_proactiveScanRunning) return;
+    _proactiveScanRunning = true;
+    _deepScanCount++;
+
+    _log('Starting proactive discovery scan #' + _deepScanCount + '...');
+
+    // Method 1: Probe PostHog /decide with varied personas
+    try { probePostHogDecide(); } catch (e) { _warn('Decide probe error:', e); }
+
+    // Method 2: Scan JS bundles for flag references
+    try { scanJSBundles(); } catch (e) { _warn('JS bundle scan error:', e); }
+
+    // Method 3: Probe PostHog flags API
+    try { probePostHogFlagsEndpoint(); } catch (e) { _warn('Flags API probe error:', e); }
+
+    _proactiveScanDone = true;
+
+    // Allow re-scanning after 5 minutes
+    setTimeout(() => { _proactiveScanDone = false; _proactiveScanRunning = false; }, 300000);
+  }
+
   // ─── POSTHOG SDK OVERRIDE ────────────────────────────────────────────────
   function applyPosthogOverrides(overrides) {
     const tryOverride = () => {
@@ -894,11 +1304,12 @@
     const header = document.createElement('div');
     header.className = P + 'header';
     header.innerHTML = `
-      <h3>\uD83D\uDE80 Flag Unlocker<span class="${P}version">v7.2</span></h3>
+      <h3>\uD83D\uDE80 Flag Unlocker<span class="${P}version">v7.3</span></h3>
       <div class="${P}header-btns">
         <button id="${IDS.enableAll}" title="Add all recommended flags (keeps existing)">Enable All \u2605</button>
         <button id="${IDS.syncSite}" title="Auto-enable all flags the site has enabled">Sync Site</button>
         <button id="${IDS.disableAll}" title="Reset all flags to defaults">Reset All</button>
+        <button id="${IDS.deepScan}" title="Scan for unknown flags via PostHog probing, JS bundle analysis, and deep RSC scan" style="background:rgba(255,170,0,0.12) !important;border:1px solid rgba(255,170,0,0.3) !important;color:#ffaa44 !important;">Deep Scan</button>
       </div>
     `;
     panel.appendChild(header);
@@ -1094,7 +1505,9 @@
         const valLine = document.createElement('div');
         valLine.className = P + 'unknown-flag-val';
         const discoveredVal = _discoveredFlagValues[flagKey];
-        valLine.textContent = discoveredVal !== undefined ? 'current: ' + JSON.stringify(discoveredVal) : 'value unknown';
+        const proSource = _proactiveDiscovered[flagKey];
+        const sourceTag = proSource ? ' [' + proSource.source + ']' : '';
+        valLine.textContent = discoveredVal !== undefined ? 'current: ' + JSON.stringify(discoveredVal) + sourceTag : 'value unknown' + sourceTag;
         valLine.style.cursor = 'pointer';
         valLine.title = 'Click to edit value';
         valLine.addEventListener('click', () => {
@@ -1144,7 +1557,7 @@
     } else {
       const emptyHint = document.createElement('div');
       emptyHint.className = P + 'empty-hint';
-      emptyHint.textContent = 'No unknown flags discovered yet. Navigate the site to scan for new flags.';
+      emptyHint.textContent = 'No unknown flags discovered yet. Click "Deep Scan" to actively probe for hidden flags.';
       discBody.appendChild(emptyHint);
     }
 
@@ -1218,7 +1631,8 @@
     const modelCount = _discoveredLockedModels.length;
     const siteCount = _siteEnabledFlags.size;
     const discoveredCount = _allDiscoveredFlags.size;
-    statusBar.innerHTML = `<span>Active: ${activeCount} | Site: ${siteCount} | Discovered: ${discoveredCount} | ${modelCount} hidden models</span><span>v7.2</span>`;
+    const proactiveCount = Object.keys(_proactiveDiscovered).length;
+    statusBar.innerHTML = `<span>Active: ${activeCount} | Site: ${siteCount} | Discovered: ${discoveredCount} | Proactive: ${proactiveCount} | ${modelCount} hidden models</span><span>v7.3</span>`;
     panel.appendChild(statusBar);
 
     // ── Toggle panel ──
@@ -1275,6 +1689,26 @@
       try { let raw = localStorage.getItem(POSTHOG_KEY); if (raw) { const data = JSON.parse(raw); delete data['$override_feature_flags']; localStorage.setItem(POSTHOG_KEY, JSON.stringify(data)); } } catch {}
       localStorage.removeItem(_SK.opts);
       window.location.reload();
+    });
+
+    // ── Deep Scan ──
+    document.getElementById(IDS.deepScan).addEventListener('click', () => {
+      const scanBtn = document.getElementById(IDS.deepScan);
+      if (scanBtn) {
+        scanBtn.textContent = 'Scanning...';
+        scanBtn.style.opacity = '0.6';
+      }
+      // Force a new scan
+      _proactiveScanDone = false;
+      _proactiveScanRunning = false;
+      runProactiveDiscovery(true);
+      // Wait a bit for results to come in, then reload to show them
+      setTimeout(() => {
+        if (scanBtn) {
+          scanBtn.textContent = 'Done! Reloading...';
+        }
+        setTimeout(() => window.location.reload(), 1000);
+      }, 8000);
     });
 
     // ── Make panel draggable ──
@@ -1392,5 +1826,10 @@
   setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 1500);
   window.addEventListener('load', () => { setTimeout(() => { if (!document.getElementById(IDS.gear)) { initGUI(); startGUIWatcher(); } }, 500); });
 
-  _log('v7.2 init: 66 new flags from PostHog decide, survey targeting, always undetectable, persistent flags.');
+  // ── Auto-run proactive discovery on page load (after a short delay) ──
+  setTimeout(() => { runProactiveDiscovery(false); }, 3000);
+  // Periodic re-scan every 10 minutes to catch new flags
+  setInterval(() => { runProactiveDiscovery(false); }, 600000);
+
+  _log('v7.3 init: proactive discovery (decide probing + JS bundle scan + deep RSC), always undetectable, persistent flags.');
 })();

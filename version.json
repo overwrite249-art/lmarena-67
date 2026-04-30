@@ -1,5 +1,5 @@
 {
-  "version": "7.2",
-  "changelog": "v7.2: 66 new flags discovered from PostHog /decide endpoint — use-image-v6, use-webdev-v6 (new recommended), plus 63 survey-targeting-* flags with dedicated subsection and Enable All Surveys button. 138 total flags now detected.",
-  "updated": "2025-04-28"
+  "version": "7.3",
+  "changelog": "v7.3: Proactive flag discovery — direct PostHog /decide probing with 7 different user personas, JS bundle scanning for flag key references, deep RSC payload scan, PostHog /flags API probe, Deep Scan button, auto-scan on init + periodic background re-scan, discovered flags persist across navigations.",
+  "updated": "2025-04-30"
 }
