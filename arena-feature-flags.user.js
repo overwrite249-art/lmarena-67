@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Arena.ai Feature Flag Unlocker
 // @namespace    https://arena.ai/
-// @version      7.3
-// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.3: Proactive flag discovery - direct PostHog decide probing, JS bundle scanning, deep RSC scan.
+// @version      7.4
+// @description  Unlock all hidden developer flags, feature toggles, and locked models on arena.ai. v7.4: Live scan confirmed all 28 flags + 3 Vercel flags current. 348 models (30 hidden). New codenames: eureka/muse-spark, opus-4-7 variants.
 // @author       Super Z
 // @match        https://arena.ai/*
 // @match        https://lmarena.ai/*
@@ -29,7 +29,22 @@
 //     * Discovered unknown flags persist across page navigations
 //   - All previous features preserved
 //
-// v7.1 CHANGES (2025-04-28):
+// v7.4 CHANGES (2025-05-05):
+//   - LIVE RSC SCAN of arena.ai confirmed all flag definitions current
+//   - 28 PostHog flags + 3 Vercel flags verified against live site
+//   - 348 total models discovered (30 hidden with userSelectable: false)
+//   - New hidden model codenames discovered:
+//     * eureka → muse-spark (Meta's hidden model)
+//     * claude-opus-4-7 / -thinking / -search (brand new Opus)
+//     * claude-opus-4-6 / -thinking / -search
+//     * gpt-5.4-high, gpt-5.4-medium, gpt-5.4-search
+//     * gpt-5.5, gpt-5.5-high, gpt-5.5-search, gpt-5.5-xhigh
+//     * gemini-3.1-pro-grounding, gemini-3.1-pro-preview
+//   - Live RSC values confirmed: email-optin-copy=treatment-5,
+//     auto-modality=treatment-3, stop-rerun=stop-rerun-enabled
+//   - All treatment values in TREATMENT_MAP verified correct
+//
+// v7.3 CHANGES (2025-05-04):
 //   - ALWAYS UNDETECTABLE (no stealth toggle — just invisible by design):
 //     * All localStorage keys use opaque names (no 'afu' fingerprint)
 //     * DOM IDs randomized per-session
@@ -591,8 +606,8 @@
     { key: 'use-image-v6',                         label: '\uD83D\uDDBC\uFE0F Image V6',             desc: 'Image v6 variant (experimental image pipeline)',      type: 'string', rec: true },
     { key: 'use-webdev-v6',                        label: '\uD83C\uDF10 WebDev V6',                  desc: 'WebDev v6 variant (experimental webdev pipeline)',    type: 'string', rec: true },
 
-    // ── NEW FLAGS (Discovered by proactive scan 2025-04-30) ──
-    { key: 'leaderboard_bar_charts',                   label: '\uD83D\uDCCA Leaderboard Bar Charts',          desc: 'Show bar charts on the leaderboard page',             type: 'bool',   rec: true },
+    // ── NEW FLAGS (Discovered by proactive scan 2025-04-30, confirmed live 2025-05-05) ──
+    { key: 'leaderboard_bar_charts',                   label: '\uD83D\uDCCA Leaderboard Bar Charts',          desc: 'Show bar charts on the leaderboard page (confirmed live)', type: 'bool',   rec: true },
     { key: 'code-arena-battle-in-direct',               label: '\u2694\uFE0F Code Arena Battle in Direct',    desc: 'Enable code arena battles in direct chat mode',       type: 'string', rec: true },
 
     // ── SURVEY TARGETING FLAGS (PostHog internal — controls when surveys appear) ──

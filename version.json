@@ -1,5 +1,5 @@
 {
-  "version": "7.3",
-  "changelog": "v7.3: Proactive flag discovery — direct PostHog /decide probing with 7 different user personas, JS bundle scanning for flag key references, deep RSC payload scan, PostHog /flags API probe, Deep Scan button, auto-scan on init + periodic background re-scan, discovered flags persist across navigations.",
-  "updated": "2025-04-30"
+  "version": "7.4",
+  "changelog": "v7.4: Live RSC scan confirmed all 28 PostHog + 3 Vercel flags current. 348 models (30 hidden). New hidden codenames: eureka/muse-spark (Meta), claude-opus-4-7, gpt-5.4/5.5, gemini-3.1-pro variants. Treatment values verified.",
+  "updated": "2025-05-05"
 }
